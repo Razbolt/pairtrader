@@ -5,20 +5,25 @@ from data.download_data import get_sp500_tickers, download_price_history
 from agents.ppo_agent import train_ppo
 from agents.ddqn_agent import train_dqn
 from agents.sac_agent import train_sac
+from pathlib import Path
 
 
 def main(start: str, end: str):
     tickers = get_sp500_tickers()
     prices = download_price_history(tickers, start, end)
+    data_dir = Path("data")
+    data_dir.mkdir(exist_ok=True)
+    filename = data_dir / f"S&P-{start}--{end}.csv"
+    prices.to_csv(filename)
 
     # Pair selection based on correlation
     corr = prices.corr()
     print("Correlation matrix:")
     print(corr)
     corr_pairs = (
-        corr.stack()
-        .reset_index()
-        .rename(columns={"level_0": "stock1", "level_1": "stock2", 0: "corr"})
+        corr.stack(future_stack=True)
+        .reset_index(name="corr")
+        .rename(columns={"level_0": "stock1", "level_1": "stock2"})
     )
     corr_pairs = corr_pairs[corr_pairs["stock1"] != corr_pairs["stock2"]]
     corr_pairs = corr_pairs.sort_values(by="corr", ascending=False)

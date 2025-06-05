@@ -2,6 +2,7 @@ import yfinance as yf
 import pandas as pd
 import requests
 from typing import List
+import io
 
 
 def get_sp500_tickers() -> List[str]:
@@ -13,8 +14,10 @@ def get_sp500_tickers() -> List[str]:
     """
     url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
     try:
-        tables = pd.read_html(requests.get(url, timeout=10).text)
+        html = requests.get(url, timeout=10).text
+        tables = pd.read_html(io.StringIO(html), flavor="bs4")
         tickers = tables[0]["Symbol"].tolist()
+        tickers = [t.replace(".", "-") for t in tickers]
     except Exception:
         # Fallback list (20 tickers) if network access is not available
         tickers = [
@@ -33,10 +36,10 @@ def download_price_history(tickers: List[str], start: str, end: str) -> pd.DataF
             tickers,
             start=start,
             end=end,
-            group_by="ticker",
+            auto_adjust=True,
             progress=False,
             threads=False,
-        )["Adj Close"]
+        )["Close"]
     except Exception as exc:
         raise RuntimeError("Failed to download price data") from exc
 
