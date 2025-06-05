@@ -20,19 +20,33 @@ def main(start: str, end: str):
     corr = prices.corr()
     print("Correlation matrix:")
     print(corr)
-    corr_pairs = (
-        corr.stack(future_stack=True)
-        .reset_index(name="corr")
-        .rename(columns={"level_0": "stock1", "level_1": "stock2"})
-    )
+    
+    # Convert correlation matrix to pairs format
+    # Clear index names to avoid conflicts and then stack
+    corr.index.name = None
+    corr.columns.name = None
+    corr_stacked = corr.stack()
+    corr_pairs = corr_stacked.reset_index()
+    corr_pairs.columns = ["stock1", "stock2", "corr"]
+    
+    # Remove self-correlations (diagonal elements)
     corr_pairs = corr_pairs[corr_pairs["stock1"] != corr_pairs["stock2"]]
+    
+    # Remove duplicate pairs (keep only upper triangle)
+    corr_pairs = corr_pairs[corr_pairs["stock1"] < corr_pairs["stock2"]]
+    
+    # Sort by correlation (highest first)
     corr_pairs = corr_pairs.sort_values(by="corr", ascending=False)
+    
+    print("Top correlated pairs:")
+    print(corr_pairs.head(10))
+    
     pair = (corr_pairs.iloc[0]["stock1"], corr_pairs.iloc[0]["stock2"])
-    print(f"Selected pair: {pair}")
+    print(f"Selected pair: {pair} with correlation: {corr_pairs.iloc[0]['corr']:.4f}")
 
     # Scale spreads for environment
     scaler = StandardScaler()
-    prices[pair] = scaler.fit_transform(prices[pair])
+    prices[list(pair)] = scaler.fit_transform(prices[list(pair)])
 
     print("Training PPO...")
     train_ppo(prices, pair, timesteps=5000)
