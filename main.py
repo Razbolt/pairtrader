@@ -2,7 +2,6 @@ import argparse
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
 from data.download_data import get_sp500_tickers, download_price_history
-from trading.pair_trading_env import PairTradingEnv
 from agents.ppo_agent import train_ppo
 from agents.ddqn_agent import train_dqn
 from agents.sac_agent import train_sac
@@ -30,7 +29,6 @@ def main(start: str, end: str):
     scaler = StandardScaler()
     prices[pair] = scaler.fit_transform(prices[pair])
 
-    env = PairTradingEnv(prices, pair)
     print("Training PPO...")
     train_ppo(prices, pair, timesteps=5000)
     print("Training DQN...")

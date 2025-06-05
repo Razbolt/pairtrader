@@ -28,14 +28,18 @@ def get_sp500_tickers() -> List[str]:
 
 def download_price_history(tickers: List[str], start: str, end: str) -> pd.DataFrame:
     """Download adjusted close prices for the given tickers."""
-    data = yf.download(
-        tickers,
-        start=start,
-        end=end,
-        group_by="ticker",
-        progress=False,
-        threads=False,
-    )["Adj Close"]
+    try:
+        data = yf.download(
+            tickers,
+            start=start,
+            end=end,
+            group_by="ticker",
+            progress=False,
+            threads=False,
+        )["Adj Close"]
+    except Exception as exc:
+        raise RuntimeError("Failed to download price data") from exc
+
     data = data.dropna(axis=0, how="all")
     return data
 
