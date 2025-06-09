@@ -18,6 +18,10 @@ venv/
 *.h5
 *.parquet
 
+# Analysis outputs
+analysis/
+*.png
+
 # OS files
 .DS_Store
 
