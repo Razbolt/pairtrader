@@ -19,8 +19,10 @@ venv/
 *.parquet
 
 # Analysis outputs
-analysis/
-*.png
+analysis/*.png
+analysis/*.jpg
+analysis/*.jpeg
+!analysis/README.md
 
 # OS files
 .DS_Store
