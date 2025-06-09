@@ -11,6 +11,7 @@ venv/
 
 # Jupyter notebooks
 .ipynb_checkpoints
+*.ipynb
 
 # Data
 *.csv

@@ -16,6 +16,12 @@ This folder contains the original visualization tools that were developed for lo
 - **Features**: Spread analysis, Z-score tracking, P&L visualization
 - **Usage**: Academic/research comparison with raw prices approach
 
+### `debug_raw_prices.py`
+- **Purpose**: Development debugging tool for identifying trading logic bugs
+- **Method**: Step-by-step debugging of cointegration strategy execution
+- **Features**: Date alignment debugging, trade execution analysis, bug reproduction
+- **Usage**: Historical artifact showing how we fixed the "0 trades" issue
+
 ## 🔄 Comparison with Current Tools
 
 | Aspect | Legacy Tools (Log Returns) | Current Tools (Raw Prices) |
@@ -43,6 +49,9 @@ python legacy_tools/trade_viz.py data/pair_trading/sp500_*_log_returns_* --stock
 
 # Log returns detailed analysis  
 python legacy_tools/trade_analysis_visualization.py data/pair_trading/sp500_*_log_returns_* --stock1 AMZN --stock2 NKE
+
+# Debug trading logic (raw prices)
+python legacy_tools/debug_raw_prices.py data/pair_trading/sp500_*_prices_*
 ```
 
 **Note**: These tools expect log returns data format (R_TICKER columns) and may not execute profitable trades. 
