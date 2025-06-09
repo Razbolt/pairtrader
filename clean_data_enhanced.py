@@ -137,8 +137,8 @@ def clean_dataset(dataset_name: str, start_date: str,
         for col in trading_cols:
             analysis_df[col] = pd.to_numeric(analysis_df[col], errors='coerce')
         
-        # 3. Select data type for correlation analysis
-        print(f"\n🎯 Selecting data for correlation analysis...")
+        # 3. Select data type for analysis and prepare raw prices if needed
+        print(f"\n🎯 Selecting data for analysis...")
         
         if data_type == 'auto':
             if log_returns:
@@ -175,8 +175,56 @@ def clean_dataset(dataset_name: str, start_date: str,
             print(f"❌ Error: Invalid data_type. Use 'auto', 'log_returns', 'simple_returns', or 'prices'")
             return False
         
+        # 📊 ENHANCEMENT: Handle raw prices for cointegration testing
+        raw_price_columns = []
+        
+        if chosen_type == 'log_returns' and log_returns:
+            print(f"   🔄 Converting log returns to raw prices for cointegration analysis...")
+            
+            # Convert log returns to cumulative price levels (starting from 100)
+            for col in log_returns:
+                ticker = col.replace('R_', '')
+                raw_price_col = f'P_{ticker}'
+                raw_price_columns.append(raw_price_col)
+                
+                # Convert log returns to price levels: P_t = 100 * exp(cumsum(log_returns))
+                log_ret_series = analysis_df[col].fillna(0)  # Fill NaN with 0 for cumsum
+                analysis_df[raw_price_col] = 100 * np.exp(log_ret_series.cumsum())
+            
+            print(f"   ✅ Created {len(raw_price_columns)} raw price series (P_TICKER format)")
+            print(f"   💡 Raw prices can be used for: Cointegration testing, stationarity analysis")
+            print(f"   💡 Log returns remain for: Correlation analysis, mean reversion strategies")
+        
+        elif chosen_type == 'prices' and prices:
+            print(f"   🔄 Converting existing prices to standardized raw price format...")
+            
+            # Convert existing price columns to p_adjclose_TICKER format for consistency
+            for col in prices:
+                # Extract ticker name from various formats
+                if 'adjclose' in col.lower():
+                    ticker = col.replace('p_adjclose_', '').replace('adjclose_', '').replace('_adjclose', '')
+                elif col.lower() in ['oil', 'gold', 'copper', 'wheat', 'nyse', 'nasdaq']:
+                    ticker = col.upper()
+                else:
+                    # Try to extract ticker from column name
+                    ticker = col.replace('close_', '').replace('_close', '').replace('open_', '').replace('high_', '').replace('low_', '')
+                
+                # Standardize to p_adjclose_TICKER format
+                raw_price_col = f'p_adjclose_{ticker}'
+                raw_price_columns.append(raw_price_col)
+                
+                # Copy the price data with standardized column name
+                analysis_df[raw_price_col] = analysis_df[col].copy()
+            
+            print(f"   ✅ Standardized {len(raw_price_columns)} raw price series (p_adjclose_TICKER format)")
+            print(f"   💡 Raw prices ready for: Direct cointegration testing, true price level analysis")
+            
+            # Update selected_columns to use the new standardized names
+            selected_columns = raw_price_columns
+        
         # Filter for good quality columns (≥85% coverage)
         good_columns = []
+        good_raw_price_columns = []
         total_rows = len(analysis_df)
         
         for col in selected_columns:
@@ -185,8 +233,24 @@ def clean_dataset(dataset_name: str, start_date: str,
             if coverage_pct >= 85.0:
                 good_columns.append(col)
         
+        # Handle raw price columns based on data type
+        if raw_price_columns:
+            if chosen_type == 'prices':
+                # When using prices, raw_price_columns ARE the main columns (no duplication needed)
+                good_raw_price_columns = []  # Don't duplicate - good_columns already contains prices
+            else:
+                # When using log_returns, raw_price_columns are additional
+                for col in raw_price_columns:
+                    valid_count = analysis_df[col].notna().sum()
+                    coverage_pct = (valid_count / total_rows) * 100
+                    if coverage_pct >= 85.0:
+                        good_raw_price_columns.append(col)
+        
         print(f"   📊 Available {chosen_type} columns: {len(selected_columns)}")
         print(f"   🎯 High-quality columns (≥85% coverage): {len(good_columns)}")
+        
+        if good_raw_price_columns:
+            print(f"   💰 High-quality raw price columns: {len(good_raw_price_columns)}")
         
         if len(good_columns) < 5:
             print(f"   ⚠️  Warning: Only {len(good_columns)} good columns found")
@@ -205,6 +269,9 @@ def clean_dataset(dataset_name: str, start_date: str,
         
         # Split data SEQUENTIALLY (this is crucial for pair trading)
         columns_to_use = [date_col] + good_columns
+        if good_raw_price_columns:
+            columns_to_use.extend(good_raw_price_columns)
+        
         clean_data = analysis_df[columns_to_use].copy()
         
         # IN-SAMPLE: First period for pair formation
@@ -221,6 +288,12 @@ def clean_dataset(dataset_name: str, start_date: str,
         # Apply cleaning strategy
         if chosen_type in ['log_returns', 'simple_returns']:
             print(f"   🔧 Preserving original {chosen_type} (no interpolation)")
+            # But interpolate raw prices if they exist
+            if good_raw_price_columns:
+                print(f"   🔧 Interpolating {len(good_raw_price_columns)} raw price columns")
+                for data in [clean_data, in_sample_data, out_sample_data]:
+                    data[good_raw_price_columns] = data[good_raw_price_columns].fillna(method='ffill')
+                    data[good_raw_price_columns] = data[good_raw_price_columns].interpolate(method='linear')
         else:
             print(f"   🔧 Forward filling and interpolating prices")
             for data in [clean_data, in_sample_data, out_sample_data]:
@@ -228,9 +301,10 @@ def clean_dataset(dataset_name: str, start_date: str,
                 data[good_columns] = data[good_columns].interpolate(method='linear')
         
         # Calculate final statistics
-        in_sample_missing = in_sample_data[good_columns].isnull().sum().sum()
-        out_sample_missing = out_sample_data[good_columns].isnull().sum().sum()
-        total_missing = clean_data[good_columns].isnull().sum().sum()
+        all_analysis_columns = good_columns + good_raw_price_columns
+        in_sample_missing = in_sample_data[all_analysis_columns].isnull().sum().sum()
+        out_sample_missing = out_sample_data[all_analysis_columns].isnull().sum().sum()
+        total_missing = clean_data[all_analysis_columns].isnull().sum().sum()
         
         print(f"   📊 In-sample missing: {in_sample_missing:,}")
         print(f"   📊 Out-sample missing: {out_sample_missing:,}")
@@ -277,6 +351,8 @@ def clean_dataset(dataset_name: str, start_date: str,
             
             f.write(f"🎯 DATA QUALITY\n")
             f.write(f"Total Assets: {len(good_columns)}\n")
+            if good_raw_price_columns:
+                f.write(f"Raw Price Series: {len(good_raw_price_columns)}\n")
             f.write(f"Missing Values: {total_missing}\n")
             f.write(f"In-Sample Missing: {in_sample_missing}\n")
             f.write(f"Out-Sample Missing: {out_sample_missing}\n\n")
@@ -284,16 +360,24 @@ def clean_dataset(dataset_name: str, start_date: str,
             f.write(f"📊 AVAILABLE DATA TYPES\n")
             f.write(f"Log Returns (R_): {len(log_returns)} columns\n")
             f.write(f"Simple Returns (r_): {len(simple_returns)} columns\n")
-            f.write(f"Prices (p_adjclose_): {len(prices)} columns\n\n")
+            f.write(f"Prices (p_adjclose_): {len(prices)} columns\n")
+            if good_raw_price_columns:
+                f.write(f"Raw Prices (P_): {len(good_raw_price_columns)} columns (converted from log returns)\n")
+            f.write(f"\n")
             
-            f.write(f"🔧 CORRELATION ANALYSIS GUIDANCE\n")
-            f.write(f"✅ RECOMMENDED: Use log returns for correlation analysis\n")
+            f.write(f"🔧 ANALYSIS GUIDANCE\n")
+            f.write(f"✅ CORRELATION ANALYSIS: Use log returns (R_ columns)\n")
             f.write(f"   - More stationary (better statistical properties)\n")
             f.write(f"   - Symmetric around zero\n")
             f.write(f"   - Time-additive: ln(P_t/P_0) = Σ log_returns\n")
             f.write(f"   - Standard in academic literature\n\n")
+            if good_raw_price_columns:
+                f.write(f"✅ COINTEGRATION ANALYSIS: Use raw prices (P_ columns)\n")
+                f.write(f"   - Test non-stationary price series for long-term equilibrium\n")
+                f.write(f"   - Engle-Granger test requires actual price levels\n")
+                f.write(f"   - Generated from: P_t = 100 * exp(cumsum(log_returns))\n\n")
             f.write(f"⚠️  Alternative: Simple returns also work but less preferred\n")
-            f.write(f"❌ NOT RECOMMENDED: Raw prices (non-stationary)\n\n")
+            f.write(f"❌ AVOID: Using raw prices for correlation (non-stationary)\n\n")
             
             f.write("📈 SELECTED ASSETS:\n")
             for i, col in enumerate(good_columns, 1):
@@ -317,7 +401,10 @@ def clean_dataset(dataset_name: str, start_date: str,
         print(f"\n🎯 NEXT STEPS FOR PAIR TRADING:")
         print(f"   1️⃣  Use IN-SAMPLE data to find correlations & select pairs")
         print(f"   2️⃣  Use OUT-SAMPLE data to backtest/trade the pairs")
-        print(f"   3️⃣  For correlation: LOG RETURNS are recommended over simple returns")
+        print(f"   3️⃣  For correlation: Use LOG RETURNS (R_ columns)")
+        if good_raw_price_columns:
+            print(f"   4️⃣  For cointegration: Use RAW PRICES (P_ columns)")
+            print(f"   💡 Now you can test both correlation AND cointegration approaches!")
         
         return True
         
@@ -338,8 +425,8 @@ def main():
    
 🔧 DATA TYPE RECOMMENDATIONS:
    log_returns:    Best for correlation analysis (recommended)
-   simple_returns: Alternative, less preferred
-   prices:         Not recommended (non-stationary)
+   simple_returns: Alternative for returns-based analysis
+   prices:         Required for cointegration analysis (raw prices)
 
 📊 Examples:
   python clean_data_enhanced.py sp500 2024-01-01 --in-sample 12 --out-sample 6
