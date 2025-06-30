@@ -41,7 +41,7 @@ class RawPricesCointegrationStrategy:
     Finds multiple pairs and backtests them simultaneously.
     """
     
-    def __init__(self, significance_level=0.05, entry_zscore=1.0, exit_zscore=0.0, transaction_cost=0.001):
+    def __init__(self, significance_level=0.05, entry_zscore=1.0, exit_zscore=0.5, transaction_cost=0.001):
         self.significance_level = significance_level
         self.entry_zscore = entry_zscore
         self.exit_zscore = exit_zscore
@@ -507,7 +507,7 @@ def main():
     parser.add_argument('--max-pairs', type=int, default=20, help='Maximum pairs to analyze (default: 20)')
     parser.add_argument('--min-stocks', type=int, default=100, help='Number of stocks to test (default: 100)')
     parser.add_argument('--entry-threshold', type=float, default=1.0, help='Entry Z-score threshold')
-    parser.add_argument('--exit-threshold', type=float, default=0.0, help='Exit Z-score threshold')
+    parser.add_argument('--exit-threshold', type=float, default=0.5, help='Exit Z-score threshold')
     parser.add_argument('--significance', type=float, default=0.05, help='Statistical significance level')
     parser.add_argument('--transaction-cost', type=float, default=0.001, help='Transaction cost rate')
     

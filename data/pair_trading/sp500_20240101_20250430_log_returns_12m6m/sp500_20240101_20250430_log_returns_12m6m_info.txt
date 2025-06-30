@@ -1,0 +1,479 @@
+PAIR TRADING DATASET: SP500
+============================================================
+
+📊 DATASET INFORMATION
+Dataset: sp500
+Data Type: log_returns
+Start Date: 2024-01-01
+Auto-calculated End Date: 2025-04-30
+Requested Periods: 12 months in-sample + 6 months out-sample
+
+📈 PERIOD STRUCTURE (Sequential)
+In-Sample (Pair Formation): 2024-01-02 to 2024-11-15
+Out-Sample (Pair Trading): 2024-11-18 to 2025-04-30
+In-Sample Days: 222
+Out-Sample Days: 111
+Actual Months: 10.6 in-sample + 5.3 out-sample
+
+🎯 DATA QUALITY
+Total Assets: 433
+Raw Price Series: 444
+Missing Values: 0
+In-Sample Missing: 0
+Out-Sample Missing: 0
+
+📊 AVAILABLE DATA TYPES
+Log Returns (R_): 444 columns
+Simple Returns (r_): 444 columns
+Prices (p_adjclose_): 444 columns
+Raw Prices (P_): 444 columns (converted from log returns)
+
+🔧 ANALYSIS GUIDANCE
+✅ CORRELATION ANALYSIS: Use log returns (R_ columns)
+   - More stationary (better statistical properties)
+   - Symmetric around zero
+   - Time-additive: ln(P_t/P_0) = Σ log_returns
+   - Standard in academic literature
+
+✅ COINTEGRATION ANALYSIS: Use raw prices (P_ columns)
+   - Test non-stationary price series for long-term equilibrium
+   - Engle-Granger test requires actual price levels
+   - Generated from: P_t = 100 * exp(cumsum(log_returns))
+
+⚠️  Alternative: Simple returns also work but less preferred
+❌ AVOID: Using raw prices for correlation (non-stationary)
+
+📈 SELECTED ASSETS:
+  1. _GSPC
+  2. MMM
+  3. ABT
+  4. ABBV
+  5. ACN
+  6. AYI
+  7. ADBE
+  8. AMD
+  9. AAP
+ 10. AES
+ 11. AMG
+ 12. AFL
+ 13. A
+ 14. APD
+ 15. AKAM
+ 16. ALK
+ 17. ALB
+ 18. ARE
+ 19. ALGN
+ 20. ALLE
+ 21. LNT
+ 22. ALL
+ 23. GOOGL
+ 24. GOOG
+ 25. MO
+ 26. AMZN
+ 27. AEE
+ 28. AAL
+ 29. AEP
+ 30. AXP
+ 31. AIG
+ 32. AMT
+ 33. AWK
+ 34. AMP
+ 35. AME
+ 36. AMGN
+ 37. APH
+ 38. ADI
+ 39. ANSS
+ 40. AON
+ 41. AOS
+ 42. APA
+ 43. AIV
+ 44. AAPL
+ 45. AMAT
+ 46. APTV
+ 47. ADM
+ 48. AJG
+ 49. AIZ
+ 50. T
+ 51. ADSK
+ 52. ADP
+ 53. AZO
+ 54. AVB
+ 55. AVY
+ 56. BAC
+ 57. BK
+ 58. BAX
+ 59. BDX
+ 60. BRK_B
+ 61. BBY
+ 62. BIIB
+ 63. BLK
+ 64. HRB
+ 65. BA
+ 66. BKNG
+ 67. BWA
+ 68. BXP
+ 69. BSX
+ 70. BHF
+ 71. BMY
+ 72. AVGO
+ 73. BF_B
+ 74. CHRW
+ 75. CA
+ 76. CDNS
+ 77. CPB
+ 78. COF
+ 79. CAH
+ 80. KMX
+ 81. CCL
+ 82. CAT
+ 83. CBOE
+ 84. CBRE
+ 85. CNC
+ 86. CNP
+ 87. CF
+ 88. SCHW
+ 89. CHTR
+ 90. CVX
+ 91. CMG
+ 92. CB
+ 93. CHD
+ 94. CI
+ 95. CINF
+ 96. CTAS
+ 97. CSCO
+ 98. C
+ 99. CFG
+100. CLX
+101. CME
+102. CMS
+103. KO
+104. CTSH
+105. CL
+106. CMCSA
+107. CMA
+108. CAG
+109. COP
+110. ED
+111. STZ
+112. COO
+113. GLW
+114. COST
+115. COTY
+116. CCI
+117. CSX
+118. CMI
+119. CVS
+120. DHI
+121. DHR
+122. DRI
+123. DVA
+124. DE
+125. DAL
+126. XRAY
+127. DVN
+128. DLR
+129. DFS
+130. DG
+131. DLTR
+132. D
+133. DOV
+134. DTE
+135. DUK
+136. DXC
+137. EMN
+138. ETN
+139. EBAY
+140. ECL
+141. EIX
+142. EW
+143. EA
+144. EMR
+145. ETR
+146. EOG
+147. EQT
+148. EFX
+149. EQIX
+150. EQR
+151. ESS
+152. EL
+153. ES
+154. EXC
+155. EXPE
+156. EXPD
+157. EXR
+158. XOM
+159. FFIV
+160. FAST
+161. FRT
+162. FDX
+163. FIS
+164. FITB
+165. FE
+166. FLS
+167. FLR
+168. FMC
+169. FL
+170. F
+171. FTV
+172. BEN
+173. FCX
+174. GRMN
+175. IT
+176. GD
+177. GE
+178. GIS
+179. GM
+180. GPC
+181. GILD
+182. GPN
+183. GS
+184. GT
+185. GWW
+186. HAL
+187. HBI
+188. HOG
+189. HIG
+190. HAS
+191. HCA
+192. HP
+193. HSIC
+194. HSY
+195. HES
+196. HPE
+197. HLT
+198. HOLX
+199. HD
+200. HON
+201. HRL
+202. HST
+203. HPQ
+204. HUM
+205. HBAN
+206. HII
+207. IDXX
+208. ITW
+209. ILMN
+210. IR
+211. INTC
+212. ICE
+213. IBM
+214. INCY
+215. IP
+216. IPG
+217. IFF
+218. INTU
+219. ISRG
+220. IVZ
+221. IPGP
+222. IQV
+223. IRM
+224. JBHT
+225. JEF
+226. SJM
+227. JNJ
+228. JCI
+229. JPM
+230. JNPR
+231. K
+232. KEY
+233. KMB
+234. KIM
+235. KMI
+236. KLAC
+237. KSS
+238. KHC
+239. KR
+240. LH
+241. LRCX
+242. LEG
+243. LEN
+244. LLY
+245. LNC
+246. LKQ
+247. LMT
+248. L
+249. LOW
+250. LYB
+251. MTB
+252. MAC
+253. M
+254. MPC
+255. MAR
+256. MMC
+257. MLM
+258. MAS
+259. MA
+260. MAT
+261. MKC
+262. MCD
+263. MCK
+264. MDT
+265. MRK
+266. MET
+267. MTD
+268. MGM
+269. MCHP
+270. MU
+271. MSFT
+272. MAA
+273. MHK
+274. TAP
+275. MDLZ
+276. MNST
+277. MCO
+278. MS
+279. MOS
+280. MSI
+281. MSCI
+282. NDAQ
+283. NOV
+284. NAVI
+285. NKTR
+286. NTAP
+287. NFLX
+288. NWL
+289. NEM
+290. NWSA
+291. NWS
+292. NEE
+293. NKE
+294. NI
+295. JWN
+296. NSC
+297. NTRS
+298. NOC
+299. NCLH
+300. NRG
+301. NUE
+302. NVDA
+303. ORLY
+304. OXY
+305. OMC
+306. OKE
+307. ORCL
+308. PCAR
+309. PKG
+310. PH
+311. PAYX
+312. PYPL
+313. PNR
+314. PEP
+315. PRGO
+316. PFE
+317. PCG
+318. PM
+319. PSX
+320. PNW
+321. PNC
+322. RL
+323. PPG
+324. PPL
+325. PX
+326. PFG
+327. PG
+328. PGR
+329. PLD
+330. PRU
+331. PEG
+332. PSA
+333. PHM
+334. PVH
+335. QRVO
+336. PWR
+337. QCOM
+338. DGX
+339. RRC
+340. RJF
+341. O
+342. REG
+343. REGN
+344. RF
+345. RSG
+346. RMD
+347. RHI
+348. ROK
+349. ROP
+350. ROST
+351. RCL
+352. CRM
+353. SBAC
+354. SLB
+355. STX
+356. SEE
+357. SRE
+358. SHW
+359. SPG
+360. SWKS
+361. SLG
+362. SNA
+363. SO
+364. LUV
+365. SPGI
+366. SWK
+367. SBUX
+368. STT
+369. SYK
+370. STI
+371. SYF
+372. SNPS
+373. SYY
+374. TROW
+375. TTWO
+376. TPR
+377. TGT
+378. TEL
+379. FTI
+380. TXN
+381. TXT
+382. TMO
+383. TJX
+384. TSCO
+385. TDG
+386. TRV
+387. TRIP
+388. FOXA
+389. FOX
+390. TSN
+391. UDR
+392. ULTA
+393. USB
+394. UAA
+395. UA
+396. UNP
+397. UAL
+398. UNH
+399. UPS
+400. URI
+401. UHS
+402. UNM
+403. VFC
+404. VLO
+405. VTR
+406. VRSN
+407. VRSK
+408. VZ
+409. VRTX
+410. V
+411. VNO
+412. VMC
+413. WMT
+414. WBA
+415. DIS
+416. WM
+417. WAT
+418. WEC
+419. WFC
+420. WELL
+421. WDC
+422. WU
+423. WY
+424. WHR
+425. WMB
+426. WYNN
+427. XEL
+428. XRX
+429. XYL
+430. YUM
+431. ZBH
+432. ZION
+433. ZTS

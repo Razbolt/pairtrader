@@ -75,11 +75,13 @@ class CointegrationTradesVisualization:
             df[date_col] = pd.to_datetime(df[date_col])
             df.set_index(date_col, inplace=True)
         
-        # Find raw price columns (p_adjclose_ format)
-        price_columns = [col for col in self.formation_data.columns if col.startswith('p_adjclose_')]
+        # Find raw price columns (try both P_ and p_adjclose_ formats)
+        price_columns = [col for col in self.formation_data.columns if col.startswith('P_')]
+        if not price_columns:
+            price_columns = [col for col in self.formation_data.columns if col.startswith('p_adjclose_')]
         
         if not price_columns:
-            raise ValueError("No raw price columns found! Expected p_adjclose_ format.")
+            raise ValueError("No raw price columns found! Expected P_ or p_adjclose_ format.")
         
         self.formation_prices = self.formation_data[price_columns]
         self.trading_prices = self.trading_data[price_columns]
@@ -129,19 +131,27 @@ class CointegrationTradesVisualization:
         print(f"\n📊 ANALYZING COINTEGRATED PAIR: {stock1} vs {stock2}")
         print("="*60)
         
-        col1 = f'p_adjclose_{stock1}'
-        col2 = f'p_adjclose_{stock2}'
+        # Try P_ format first (new dataset), then p_adjclose_ format (old dataset)
+        col1 = f'P_{stock1}'
+        col2 = f'P_{stock2}'
         
         if col1 not in self.price_columns or col2 not in self.price_columns:
+            col1 = f'p_adjclose_{stock1}'
+            col2 = f'p_adjclose_{stock2}'
+            
+        if col1 not in self.price_columns or col2 not in self.price_columns:
             # Find available stocks for fallback
-            available_tickers = [col.replace('p_adjclose_', '') for col in self.price_columns[:10]]
+            available_tickers = [col.replace('P_', '').replace('p_adjclose_', '') for col in self.price_columns[:10]]
             print(f"❌ {stock1} or {stock2} not available")
             print(f"   Available tickers: {', '.join(available_tickers)}")
             # Use first two available stocks
             stock1 = available_tickers[0]
             stock2 = available_tickers[1]
-            col1 = f'p_adjclose_{stock1}'
-            col2 = f'p_adjclose_{stock2}'
+            col1 = f'P_{stock1}'
+            col2 = f'P_{stock2}'
+            if col1 not in self.price_columns:
+                col1 = f'p_adjclose_{stock1}'
+                col2 = f'p_adjclose_{stock2}'
             print(f"   Using {stock1} vs {stock2} instead")
         
         # Test cointegration in formation period
