@@ -1,6 +1,6 @@
 # Pair Trading Research Framework
 
-This project provides a comprehensive research framework for pair trading strategies using cointegration analysis, correlation analysis, and machine learning approaches.
+This project provides a comprehensive research framework for pair trading strategies, with a new primary focus on **signal optimization using different methods** and direct comparison with the classic cointegration approach.
 
 ## 🚀 Quick Start
 
@@ -15,47 +15,55 @@ python create_pair_trading_dataset.py sp500 2024-01-01 --in-sample 12 --out-samp
 
 # Run cointegration strategy
 python cointegration_strategy.py data/pair_trading/sp500_20240101_20250430_log_returns_12m6m --max-pairs 10
+
+# Run signal optimization experiments (see below)
+python ml_pair_trading_strategy.py data/pair_trading/sp500_20240101_20250430_log_returns_12m6m --optimize-signals --compare-cointegration
 ```
+
+## 🔬 Primary Research Focus: Signal Optimization
+
+- **Goal:** Optimize entry/exit signals for pair trading using various methods (ML, statistical, hybrid, etc.)
+- **Comparison:** All optimized signal methods are benchmarked against the classic cointegration strategy
+- **Metrics:** Sharpe ratio, win rate, P&L, trade frequency, and robustness
+- **Approaches:**
+  - Machine learning classifiers/regressors (XGBoost, Random Forest, etc.)
+  - Statistical threshold optimization
+  - Hybrid and ensemble methods
+  - Feature engineering for signal quality
 
 ## 📁 Main Components
 
 ### 🎯 Strategy Files
 - **`cointegration_strategy.py`** - Cointegration-based pair trading using raw prices
-- **`correlation_returns_strategy.py`** - Correlation-based strategy using log returns  
-- **`ml_pair_trading_strategy.py`** - Machine learning approach with XGBoost/Random Forest
+- **`ml_pair_trading_strategy.py`** - Machine learning and signal optimization approaches
+- **`correlation_returns_strategy.py`** - Correlation-based strategy using log returns
 
 ### 📊 Visualization Tools
 - **`cointegration_trades_visualization.py`** - Visualize cointegration trades and signals
 - **`multi_pair_trades_visualization.py`** - Multi-pair trading performance charts
 - **`simple_multi_pair_visualization.py`** - Simplified multi-pair visualization
 
-### 🔧 Data Processing
+### 🛠️ Data Processing
 - **`create_pair_trading_dataset.py`** - Create in-sample/out-sample datasets
 - **`explore_dataset.py`** - Explore and analyze dataset contents
 - **`stata_data_reader.py`** - Read Stata (.dta) files
 
-## 📈 Usage Examples
+## 🧪 Usage Examples
 
 ```bash
-# Cointegration strategy with custom parameters
-python cointegration_strategy.py data/pair_trading/dataset_name \
-    --max-pairs 20 \
-    --min-stocks 50 \
-    --entry-threshold 1.5 \
-    --exit-threshold 0.5
+# Cointegration strategy
+python cointegration_strategy.py data/pair_trading/dataset_name --max-pairs 20
 
-# Visualize specific pair trades
-python cointegration_trades_visualization.py data/pair_trading/dataset_name \
-    --stock1 AAPL --stock2 MSFT \
-    --entry-threshold 1.0 --exit-threshold 0.5
+# Signal optimization (ML, hybrid, etc.)
+python ml_pair_trading_strategy.py data/pair_trading/dataset_name --optimize-signals --compare-cointegration --model xgboost
 
-# Machine learning strategy
-python ml_pair_trading_strategy.py data/pair_trading/dataset_name \
-    --model xgboost --max-pairs 10
+# Visualize results
+python cointegration_trades_visualization.py data/pair_trading/dataset_name --stock1 AAPL --stock2 MSFT
 ```
 
 ## 🎓 Research Features
 
+- **Signal Optimization** - Multiple methods for entry/exit signal generation
 - **In-Sample/Out-Sample Analysis** - Proper train/test splits
 - **Multiple Data Types** - Log returns, raw prices, simple returns
 - **Statistical Testing** - Engle-Granger cointegration tests
