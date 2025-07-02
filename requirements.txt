@@ -1,7 +1,10 @@
 pandas
 numpy
+statsmodels
+xgboost
+scikit-learn
+joblib
 matplotlib
 yfinance
 stable-baselines3
 gymnasium
-scikit-learn

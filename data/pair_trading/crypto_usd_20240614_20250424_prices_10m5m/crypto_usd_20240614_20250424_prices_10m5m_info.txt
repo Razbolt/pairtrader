@@ -1,0 +1,49 @@
+PAIR TRADING DATASET: CRYPTO_USD
+============================================================
+
+📊 DATASET INFORMATION
+Dataset: crypto_usd
+Data Type: prices
+Start Date: 2024-06-14
+Auto-calculated End Date: 2025-04-24
+Requested Periods: 10 months in-sample + 5 months out-sample
+
+📈 PERIOD STRUCTURE (Sequential)
+In-Sample (Pair Formation): 2024-06-14 to 2025-01-09
+Out-Sample (Pair Trading): 2025-01-10 to 2025-04-24
+In-Sample Days: 210
+Out-Sample Days: 105
+Actual Months: 10.0 in-sample + 5.0 out-sample
+
+🎯 DATA QUALITY
+Total Assets: 10
+Missing Values: 0
+In-Sample Missing: 0
+Out-Sample Missing: 0
+
+📊 AVAILABLE DATA TYPES
+Log Returns (R_): 0 columns
+Simple Returns (r_): 0 columns
+Prices (p_adjclose_): 5 columns
+
+🔧 ANALYSIS GUIDANCE
+✅ CORRELATION ANALYSIS: Use log returns (R_ columns)
+   - More stationary (better statistical properties)
+   - Symmetric around zero
+   - Time-additive: ln(P_t/P_0) = Σ log_returns
+   - Standard in academic literature
+
+⚠️  Alternative: Simple returns also work but less preferred
+❌ AVOID: Using raw prices for correlation (non-stationary)
+
+📈 SELECTED ASSETS:
+  1. BCH
+  2. BTC
+  3. ETH
+  4. LTC
+  5. XRP
+  6. v_BCH
+  7. v_BTC
+  8. v_ETH
+  9. v_LTC
+ 10. v_XRP

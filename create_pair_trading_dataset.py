@@ -112,26 +112,62 @@ def clean_dataset(dataset_name: str, start_date: str,
         
         # 2. Find and categorize trading columns
         print(f"\n🔍 Analyzing data structure...")
-        trading_cols = []
-        for col in filtered_df.columns:
-            if col != date_col and not any(x in col.lower() for x in ['volume', 'vol', 'timestamp', 'daten']):
-                if (col.startswith('R_') or col.startswith('r_') or 
-                    'adjclose' in col or col.lower() in ['oil', 'gold', 'copper', 'wheat', 'nyse', 'nasdaq'] or
-                    any(x in col for x in ['open_', 'high_', 'low_', 'close_'])):
-                    trading_cols.append(col)
-        
-        # Categorize columns by type
-        log_returns = [col for col in trading_cols if col.startswith('R_')]
-        simple_returns = [col for col in trading_cols if col.startswith('r_') and not col.startswith('R_')]
-        prices = [col for col in trading_cols if col not in log_returns + simple_returns]
-        
-        print(f"   📊 Total trading columns: {len(trading_cols)}")
-        print(f"   📈 Log returns (R_): {len(log_returns)}")
-        print(f"   📊 Simple returns (r_): {len(simple_returns)}")
-        print(f"   💰 Prices (p_adjclose_): {len(prices)}")
-        
+
+        # ENHANCED LOGIC FOR CRYPTO DATASETS
+        if 'crypto' in dataset_name.lower():
+            print("   🔬 Applying specialized crypto data logic...")
+            all_cols = filtered_df.columns
+            tickers = sorted(list(set([c.split('_')[1] for c in all_cols if '_' in c and c.split('_')[1] != ''])))
+            
+            price_cols = [f'close_{ticker}' for ticker in tickers if f'close_{ticker}' in all_cols]
+            volume_cols = [f'volume_{ticker}' for ticker in tickers if f'volume_{ticker}' in all_cols]
+            
+            print(f"   🪙 Found {len(tickers)} unique tickers: {', '.join(tickers)}")
+            
+            # Select and rename columns
+            analysis_df = filtered_df[[date_col] + price_cols + volume_cols].copy()
+            
+            rename_map = {}
+            for p_col in price_cols:
+                ticker = p_col.split('_')[1]
+                rename_map[p_col] = f'p_adjclose_{ticker}' # Standardize to p_adjclose_
+            for v_col in volume_cols:
+                ticker = v_col.split('_')[1]
+                rename_map[v_col] = f'v_{ticker}'
+            
+            analysis_df.rename(columns=rename_map, inplace=True)
+            
+            # Update internal column lists
+            trading_cols = list(rename_map.values())
+            prices = [col for col in trading_cols if col.startswith('p_adjclose_')]
+            selected_columns = prices
+            chosen_type = 'prices'
+            log_returns, simple_returns, raw_price_columns = [], [], []
+
+            print(f"   ✅ Selected {len(prices)} price columns and {len(volume_cols)} volume columns.")
+
+        else: # Original logic for other datasets
+            trading_cols = []
+            for col in filtered_df.columns:
+                if col != date_col and not any(x in col.lower() for x in ['volume', 'vol', 'timestamp', 'daten']):
+                    if (col.startswith('R_') or col.startswith('r_') or 
+                        'adjclose' in col or col.lower() in ['oil', 'gold', 'copper', 'wheat', 'nyse', 'nasdaq'] or
+                        any(x in col for x in ['open_', 'high_', 'low_', 'close_'])):
+                        trading_cols.append(col)
+            
+            # Categorize columns by type
+            log_returns = [col for col in trading_cols if col.startswith('R_')]
+            simple_returns = [col for col in trading_cols if col.startswith('r_') and not col.startswith('R_')]
+            prices = [col for col in trading_cols if col not in log_returns + simple_returns]
+            
+            print(f"   📊 Total trading columns: {len(trading_cols)}")
+            print(f"   📈 Log returns (R_): {len(log_returns)}")
+            print(f"   📊 Simple returns (r_): {len(simple_returns)}")
+            print(f"   💰 Prices (p_adjclose_): {len(prices)}")
+            
+            analysis_df = filtered_df[[date_col] + trading_cols].copy()
+
         # Clean and analyze coverage
-        analysis_df = filtered_df[[date_col] + trading_cols].copy()
         analysis_df[trading_cols] = analysis_df[trading_cols].replace('.', np.nan)
         
         for col in trading_cols:
@@ -140,117 +176,134 @@ def clean_dataset(dataset_name: str, start_date: str,
         # 3. Select data type for analysis and prepare raw prices if needed
         print(f"\n🎯 Selecting data for analysis...")
         
-        if data_type == 'auto':
-            if log_returns:
+        if 'crypto' not in dataset_name.lower(): # Skip this section for crypto as it's already handled
+            if data_type == 'auto':
+                if log_returns:
+                    selected_columns = log_returns
+                    chosen_type = 'log_returns'
+                    print(f"   ✅ Auto-selected: Log returns (best for correlation analysis)")
+                elif simple_returns:
+                    selected_columns = simple_returns
+                    chosen_type = 'simple_returns'
+                    print(f"   ✅ Auto-selected: Simple returns")
+                else:
+                    selected_columns = prices
+                    chosen_type = 'prices'
+                    print(f"   ✅ Auto-selected: Prices (will compute returns)")
+            elif data_type == 'log_returns':
+                if not log_returns:
+                    print(f"❌ Error: No log returns columns found")
+                    return False
                 selected_columns = log_returns
                 chosen_type = 'log_returns'
-                print(f"   ✅ Auto-selected: Log returns (best for correlation analysis)")
-            elif simple_returns:
+            elif data_type == 'simple_returns':
+                if not simple_returns:
+                    print(f"❌ Error: No simple returns columns found")
+                    return False
                 selected_columns = simple_returns
                 chosen_type = 'simple_returns'
-                print(f"   ✅ Auto-selected: Simple returns")
-            else:
+            elif data_type == 'prices':
+                if not prices:
+                    print(f"❌ Error: No price columns found")
+                    return False
                 selected_columns = prices
                 chosen_type = 'prices'
-                print(f"   ✅ Auto-selected: Prices (will compute returns)")
-        elif data_type == 'log_returns':
-            if not log_returns:
-                print(f"❌ Error: No log returns columns found")
+            else:
+                print(f"❌ Error: Invalid data_type. Use 'auto', 'log_returns', 'simple_returns', or 'prices'")
                 return False
-            selected_columns = log_returns
-            chosen_type = 'log_returns'
-        elif data_type == 'simple_returns':
-            if not simple_returns:
-                print(f"❌ Error: No simple returns columns found")
-                return False
-            selected_columns = simple_returns
-            chosen_type = 'simple_returns'
-        elif data_type == 'prices':
-            if not prices:
-                print(f"❌ Error: No price columns found")
-                return False
-            selected_columns = prices
-            chosen_type = 'prices'
-        else:
-            print(f"❌ Error: Invalid data_type. Use 'auto', 'log_returns', 'simple_returns', or 'prices'")
-            return False
         
         # 📊 ENHANCEMENT: Handle raw prices for cointegration testing
-        raw_price_columns = []
+        if 'crypto' not in dataset_name.lower(): # Skip this for crypto
+            raw_price_columns = []
         
-        if chosen_type == 'log_returns' and log_returns:
-            print(f"   🔄 Converting log returns to raw prices for cointegration analysis...")
-            
-            # Convert log returns to cumulative price levels (starting from 100)
-            for col in log_returns:
-                ticker = col.replace('R_', '')
-                raw_price_col = f'P_{ticker}'
-                raw_price_columns.append(raw_price_col)
+            if chosen_type == 'log_returns' and log_returns:
+                print(f"   🔄 Converting log returns to raw prices for cointegration analysis...")
                 
-                # Convert log returns to price levels: P_t = 100 * exp(cumsum(log_returns))
-                log_ret_series = analysis_df[col].fillna(0)  # Fill NaN with 0 for cumsum
-                analysis_df[raw_price_col] = 100 * np.exp(log_ret_series.cumsum())
-            
-            print(f"   ✅ Created {len(raw_price_columns)} raw price series (P_TICKER format)")
-            print(f"   💡 Raw prices can be used for: Cointegration testing, stationarity analysis")
-            print(f"   💡 Log returns remain for: Correlation analysis, mean reversion strategies")
-        
-        elif chosen_type == 'prices' and prices:
-            print(f"   🔄 Converting existing prices to standardized raw price format...")
-            
-            # Convert existing price columns to p_adjclose_TICKER format for consistency
-            for col in prices:
-                # Extract ticker name from various formats
-                if 'adjclose' in col.lower():
-                    ticker = col.replace('p_adjclose_', '').replace('adjclose_', '').replace('_adjclose', '')
-                elif col.lower() in ['oil', 'gold', 'copper', 'wheat', 'nyse', 'nasdaq']:
-                    ticker = col.upper()
-                else:
-                    # Try to extract ticker from column name
-                    ticker = col.replace('close_', '').replace('_close', '').replace('open_', '').replace('high_', '').replace('low_', '')
+                # Convert log returns to cumulative price levels (starting from 100)
+                for col in log_returns:
+                    ticker = col.replace('R_', '')
+                    raw_price_col = f'P_{ticker}'
+                    raw_price_columns.append(raw_price_col)
+                    
+                    # Convert log returns to price levels: P_t = 100 * exp(cumsum(log_returns))
+                    log_ret_series = analysis_df[col].fillna(0)  # Fill NaN with 0 for cumsum
+                    analysis_df[raw_price_col] = 100 * np.exp(log_ret_series.cumsum())
                 
-                # Standardize to p_adjclose_TICKER format
-                raw_price_col = f'p_adjclose_{ticker}'
-                raw_price_columns.append(raw_price_col)
+                print(f"   ✅ Created {len(raw_price_columns)} raw price series (P_TICKER format)")
+                print(f"   💡 Raw prices can be used for: Cointegration testing, stationarity analysis")
+                print(f"   💡 Log returns remain for: Correlation analysis, mean reversion strategies")
+            
+                # Update selected_columns to use the new standardized names
+                selected_columns = raw_price_columns
+            
+            elif chosen_type == 'prices' and prices:
+                print(f"   🔄 Converting existing prices to standardized raw price format...")
                 
-                # Copy the price data with standardized column name
-                analysis_df[raw_price_col] = analysis_df[col].copy()
-            
-            print(f"   ✅ Standardized {len(raw_price_columns)} raw price series (p_adjclose_TICKER format)")
-            print(f"   💡 Raw prices ready for: Direct cointegration testing, true price level analysis")
-            
-            # Update selected_columns to use the new standardized names
-            selected_columns = raw_price_columns
+                # Convert existing price columns to p_adjclose_TICKER format for consistency
+                for col in prices:
+                    # Extract ticker name from various formats
+                    if 'adjclose' in col.lower():
+                        ticker = col.replace('p_adjclose_', '').replace('adjclose_', '').replace('_adjclose', '')
+                    elif col.lower() in ['oil', 'gold', 'copper', 'wheat', 'nyse', 'nasdaq']:
+                        ticker = col.upper()
+                    else:
+                        # Try to extract ticker from column name
+                        ticker = col.replace('close_', '').replace('_close', '').replace('open_', '').replace('high_', '').replace('low_', '')
+                    
+                    # Standardize to p_adjclose_TICKER format
+                    raw_price_col = f'p_adjclose_{ticker}'
+                    raw_price_columns.append(raw_price_col)
+                    
+                    # Copy the price data with standardized column name
+                    analysis_df[raw_price_col] = analysis_df[col].copy()
+                
+                print(f"   ✅ Standardized {len(raw_price_columns)} raw price series (p_adjclose_TICKER format)")
+                print(f"   💡 Raw prices ready for: Direct cointegration testing, true price level analysis")
+                
+                # Update selected_columns to use the new standardized names
+                selected_columns = raw_price_columns
         
         # Filter for good quality columns (≥85% coverage)
         good_columns = []
         good_raw_price_columns = []
         total_rows = len(analysis_df)
         
-        for col in selected_columns:
+        all_cols_to_check = selected_columns
+        if 'crypto' in dataset_name.lower():
+            # For crypto, we check all p_ and v_ columns
+            all_cols_to_check = trading_cols
+
+        for col in all_cols_to_check:
             valid_count = analysis_df[col].notna().sum()
             coverage_pct = (valid_count / total_rows) * 100
             if coverage_pct >= 85.0:
                 good_columns.append(col)
         
-        # Handle raw price columns based on data type
-        if raw_price_columns:
-            if chosen_type == 'prices':
-                # When using prices, raw_price_columns ARE the main columns (no duplication needed)
-                good_raw_price_columns = []  # Don't duplicate - good_columns already contains prices
-            else:
-                # When using log_returns, raw_price_columns are additional
-                for col in raw_price_columns:
-                    valid_count = analysis_df[col].notna().sum()
-                    coverage_pct = (valid_count / total_rows) * 100
-                    if coverage_pct >= 85.0:
-                        good_raw_price_columns.append(col)
+        if 'crypto' in dataset_name.lower():
+            selected_columns = [c for c in good_columns if c.startswith('p_adjclose_')]
+            print(f"   🎯 High-quality price columns (≥85% coverage): {len(selected_columns)}")
+            volume_cols = [c for c in good_columns if c.startswith('v_')]
+            print(f"   📊 High-quality volume columns (≥85% coverage): {len(volume_cols)}")
+            good_columns.sort() # for consistency
+        else:
+            # Handle raw price columns based on data type
+            if raw_price_columns:
+                if chosen_type == 'prices':
+                    # When using prices, raw_price_columns ARE the main columns (no duplication needed)
+                    good_raw_price_columns = []  # Don't duplicate - good_columns already contains prices
+                else:
+                    # When using log_returns, raw_price_columns are additional
+                    for col in raw_price_columns:
+                        valid_count = analysis_df[col].notna().sum()
+                        coverage_pct = (valid_count / total_rows) * 100
+                        if coverage_pct >= 85.0:
+                            good_raw_price_columns.append(col)
+            
+            print(f"   📊 Available {chosen_type} columns: {len(selected_columns)}")
+            print(f"   🎯 High-quality columns (≥85% coverage): {len(good_columns)}")
         
-        print(f"   📊 Available {chosen_type} columns: {len(selected_columns)}")
-        print(f"   🎯 High-quality columns (≥85% coverage): {len(good_columns)}")
-        
-        if good_raw_price_columns:
-            print(f"   💰 High-quality raw price columns: {len(good_raw_price_columns)}")
+            if good_raw_price_columns:
+                print(f"   💰 High-quality raw price columns: {len(good_raw_price_columns)}")
         
         if len(good_columns) < 5:
             print(f"   ⚠️  Warning: Only {len(good_columns)} good columns found")
@@ -286,20 +339,25 @@ def clean_dataset(dataset_name: str, start_date: str,
         print(f"   📊 Actual months: {len(in_sample_data)/21:.1f} in-sample + {len(out_sample_data)/21:.1f} out-sample")
         
         # Apply cleaning strategy
-        if chosen_type in ['log_returns', 'simple_returns']:
-            print(f"   🔧 Preserving original {chosen_type} (no interpolation)")
-            # But interpolate raw prices if they exist
-            if good_raw_price_columns:
-                print(f"   🔧 Interpolating {len(good_raw_price_columns)} raw price columns")
-                for data in [clean_data, in_sample_data, out_sample_data]:
-                    data[good_raw_price_columns] = data[good_raw_price_columns].fillna(method='ffill')
-                    data[good_raw_price_columns] = data[good_raw_price_columns].interpolate(method='linear')
-        else:
-            print(f"   🔧 Forward filling and interpolating prices")
-            for data in [clean_data, in_sample_data, out_sample_data]:
-                data[good_columns] = data[good_columns].fillna(method='ffill')
-                data[good_columns] = data[good_columns].interpolate(method='linear')
+        all_cols_to_clean = good_columns
+        if 'crypto' not in dataset_name.lower() and chosen_type in ['log_returns', 'simple_returns']:
+             print(f"   🔧 Preserving original {chosen_type} (no interpolation)")
+             if good_raw_price_columns:
+                 print(f"   🔧 Interpolating {len(good_raw_price_columns)} raw price columns")
+                 all_cols_to_clean = good_raw_price_columns
+             else:
+                 all_cols_to_clean = [] # Nothing to clean
         
+        if all_cols_to_clean:
+            print(f"   🔧 Forward filling and interpolating {len(all_cols_to_clean)} columns")
+            for col in all_cols_to_clean:
+                clean_data[col] = clean_data[col].fillna(method='ffill')
+                clean_data[col] = clean_data[col].interpolate(method='linear')
+
+        # Re-slice data after cleaning to ensure no SettingWithCopyWarning
+        in_sample_data = clean_data.iloc[:in_sample_actual].copy()
+        out_sample_data = clean_data.iloc[in_sample_actual:in_sample_actual + out_sample_actual].copy()
+
         # Calculate final statistics
         all_analysis_columns = good_columns + good_raw_price_columns
         in_sample_missing = in_sample_data[all_analysis_columns].isnull().sum().sum()

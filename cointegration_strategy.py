@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-🔗 Raw Prices Cointegration Strategy - Top 20 Pairs Analysis
+🔗 Log Prices Cointegration Strategy - Top 20 Pairs Analysis
 
-This strategy uses actual raw prices to find and backtest cointegrated pairs:
-1. Load actual raw price data (p_adjclose_ or P_ columns)
-2. Find top 20 cointegrated pairs using Engle-Granger tests
+This strategy uses log-transformed prices to find and backtest cointegrated pairs:
+1. Load raw price data and apply a log transformation
+2. Find top 20 cointegrated pairs using Engle-Granger tests on log prices
 3. Backtest strategy on all pairs simultaneously
 4. Analyze performance with detailed statistics
 
 Usage:
-    python raw_prices_strategy.py data/pair_trading/sp500_20230101_20240705_prices_12m6m
+    python cointegration_strategy.py data/pair_trading/sp500_20230101_20240705_prices_12m6m
 """
 
 import pandas as pd
@@ -33,11 +33,11 @@ plt.rcParams['figure.figsize'] = (16, 12)
 plt.rcParams['font.size'] = 10
 
 
-class RawPricesCointegrationStrategy:
+class LogPricesCointegrationStrategy:
     """
-    🔗 Raw Prices Cointegration Strategy
+    🔗 Log Prices Cointegration Strategy
     
-    Uses actual price levels for true cointegration testing and trading.
+    Uses log-transformed price levels for robust cointegration testing.
     Finds multiple pairs and backtests them simultaneously.
     """
     
@@ -51,7 +51,7 @@ class RawPricesCointegrationStrategy:
         self.performance_metrics = {}
         
     def load_data(self, data_path):
-        """📁 Load formation and trading data with raw prices"""
+        """📁 Load formation and trading data and convert to log prices"""
         data_path = Path(data_path)
         
         # Find files
@@ -66,7 +66,7 @@ class RawPricesCointegrationStrategy:
         if not formation_file or not trading_file:
             raise FileNotFoundError("Could not find formation or trading CSV files")
         
-        print(f"🔗 RAW PRICES COINTEGRATION STRATEGY - TOP 20 PAIRS")
+        print(f"🔗 LOG PRICES COINTEGRATION STRATEGY - TOP 20 PAIRS")
         print("="*70)
         print(f"📈 Formation data: {formation_file.name}")
         print(f"💰 Trading data: {trading_file.name}")
@@ -78,8 +78,9 @@ class RawPricesCointegrationStrategy:
         # Set date columns
         for df in [self.formation_data, self.trading_data]:
             date_col = 'period' if 'period' in df.columns else 'date'
-            df[date_col] = pd.to_datetime(df[date_col])
-            df.set_index(date_col, inplace=True)
+            if date_col in df.columns:
+                df[date_col] = pd.to_datetime(df[date_col])
+                df.set_index(date_col, inplace=True)
         
         # Find raw price columns (try both formats)
         price_columns = [col for col in self.formation_data.columns if col.startswith('p_adjclose_')]
@@ -90,8 +91,15 @@ class RawPricesCointegrationStrategy:
                 print("✅ Using generated raw price columns (P_) from log returns conversion")
                 self.price_col_format = 'P_'
             else:
-                print("❌ No raw price columns found!")
-                raise ValueError("No raw price columns found")
+                # Check if this is commodities data (direct commodity names)
+                commodity_columns = ['oil', 'copper', 'gold', 'oil_brent', 'aluminium', 'wheat', 'cocoa', 'sugar', 'nickel', 'platinum']
+                price_columns = [col for col in self.formation_data.columns if col in commodity_columns]
+                if price_columns:
+                    print("✅ Using commodities price columns")
+                    self.price_col_format = ''  # No prefix for commodities
+                else:
+                    print("❌ No raw price columns found!")
+                    raise ValueError("No raw price columns found")
         else:
             print("✅ Using actual raw price columns (p_adjclose_)")
             self.price_col_format = 'p_adjclose_'
@@ -100,17 +108,21 @@ class RawPricesCointegrationStrategy:
         self.formation_prices = self.formation_data[price_columns]
         self.trading_prices = self.trading_data[price_columns]
         
+        # ❗ KEY STEP: Convert to log prices
+        self.formation_prices = self.formation_prices.apply(lambda x: np.log(x.replace(0, 1e-10)))
+        self.trading_prices = self.trading_prices.apply(lambda x: np.log(x.replace(0, 1e-10)))
+        
         self.price_columns = price_columns
         
         print(f"   ✅ Formation: {self.formation_data.index.min().strftime('%Y-%m-%d')} to {self.formation_data.index.max().strftime('%Y-%m-%d')}")
         print(f"   ✅ Trading: {self.trading_data.index.min().strftime('%Y-%m-%d')} to {self.trading_data.index.max().strftime('%Y-%m-%d')}")
-        print(f"   📊 Raw price columns: {len(self.price_columns)}")
-        print(f"   💡 Using actual price levels for true cointegration testing")
+        print(f"   📊 Price columns: {len(self.price_columns)}")
+        print(f"   💡 Using LOG-TRANSFORMED prices for cointegration testing")
         
         return self
     
     def test_cointegration(self, stock1_prices, stock2_prices):
-        """🔗 Test cointegration using Engle-Granger test on raw prices"""
+        """🔗 Test cointegration using Engle-Granger test on log prices"""
         
         # Get common dates and clean data
         common_dates = stock1_prices.index.intersection(stock2_prices.index)
@@ -141,7 +153,7 @@ class RawPricesCointegrationStrategy:
             return False, np.nan, 0, 0
     
     def find_cointegrated_pairs(self, max_pairs=20, min_stocks=50):
-        """🔍 Find top cointegrated pairs using raw prices"""
+        """🔍 Find top cointegrated pairs using log prices"""
         print(f"\n🔍 Finding top {max_pairs} cointegrated pairs (significance: {self.significance_level*100}%)")
         
         # Use a subset of stocks for efficiency (top by market cap/volume)
@@ -406,47 +418,58 @@ class RawPricesCointegrationStrategy:
         if not self.trades:
             self.performance_metrics = {}
             return
+
+        trades_df = pd.DataFrame(self.trades)
         
-        # Basic metrics
-        total_trades = len(self.trades)
-        winning_trades = sum(1 for trade in self.trades if trade['net_pnl'] > 0)
-        losing_trades = total_trades - winning_trades
+        # --- Overall Portfolio Metrics ---
+        total_trades = len(trades_df)
+        winning_trades_df = trades_df[trades_df['net_pnl'] > 0]
+        total_pnl = trades_df['net_pnl'].sum()
+        win_rate = len(winning_trades_df) / total_trades if total_trades > 0 else 0
         
-        total_pnl = sum(trade['net_pnl'] for trade in self.trades)
-        total_gross_pnl = sum(trade['gross_pnl'] for trade in self.trades)
-        total_costs = sum(trade['transaction_costs'] for trade in self.trades)
+        gross_profit = winning_trades_df['net_pnl'].sum()
+        gross_loss = abs(trades_df[trades_df['net_pnl'] < 0]['net_pnl'].sum())
+        profit_factor = gross_profit / gross_loss if gross_loss > 0 else np.inf
         
-        returns = [trade['net_pnl'] / trade['trade_value'] for trade in self.trades]
-        avg_return = np.mean(returns) if returns else 0
-        return_std = np.std(returns) if len(returns) > 1 else 0
-        
-        # Win/Loss analysis
-        winning_pnls = [trade['net_pnl'] for trade in self.trades if trade['net_pnl'] > 0]
-        losing_pnls = [trade['net_pnl'] for trade in self.trades if trade['net_pnl'] < 0]
-        
-        avg_win = np.mean(winning_pnls) if winning_pnls else 0
-        avg_loss = np.mean(losing_pnls) if losing_pnls else 0
-        
-        # Risk metrics
-        sharpe_ratio = avg_return / return_std if return_std > 0 else 0
+        # --- Time-Series Analysis for Sharpe & Sortino (Portfolio) ---
+        portfolio_sharpe = 0
+        portfolio_sortino = np.inf
+        max_drawdown = 0
+
+        if not trades_df.empty:
+            # Create a daily P&L stream for the entire portfolio
+            daily_pnl = trades_df.groupby('exit_date')['net_pnl'].sum()
+            date_range = pd.date_range(start=trades_df['entry_date'].min(), end=trades_df['exit_date'].max(), freq='D')
+            daily_pnl = daily_pnl.reindex(date_range, fill_value=0)
+            
+            cumulative_pnl = daily_pnl.cumsum()
+            daily_returns = cumulative_pnl.pct_change().fillna(0).replace([np.inf, -np.inf], 0)
+
+            # Sharpe Ratio
+            if daily_returns.std() > 0:
+                portfolio_sharpe = (daily_returns.mean() / daily_returns.std()) * np.sqrt(252)
+            
+            # Sortino Ratio
+            downside_returns = daily_returns[daily_returns < 0]
+            if downside_returns.std() > 0:
+                portfolio_sortino = (daily_returns.mean() / downside_returns.std()) * np.sqrt(252)
+
+            # Max Drawdown
+            running_max = cumulative_pnl.cummax()
+            drawdown = running_max - cumulative_pnl
+            max_drawdown = drawdown.max()
         
         # Store metrics
         self.performance_metrics = {
             'total_trades': total_trades,
-            'winning_trades': winning_trades,
-            'losing_trades': losing_trades,
-            'win_rate': winning_trades / total_trades if total_trades > 0 else 0,
+            'win_rate': win_rate,
             'total_pnl': total_pnl,
-            'total_gross_pnl': total_gross_pnl,
-            'total_costs': total_costs,
-            'avg_return': avg_return,
-            'return_std': return_std,
-            'sharpe_ratio': sharpe_ratio,
-            'avg_win': avg_win,
-            'avg_loss': avg_loss,
-            'profit_factor': abs(avg_win * winning_trades / (avg_loss * losing_trades)) if losing_trades > 0 and avg_loss != 0 else np.inf
+            'profit_factor': profit_factor,
+            'sharpe_ratio': portfolio_sharpe,
+            'sortino_ratio': portfolio_sortino,
+            'max_drawdown': max_drawdown
         }
-    
+
     def print_results(self):
         """📊 Print comprehensive results"""
         print(f"\n" + "="*70)
@@ -466,28 +489,56 @@ class RawPricesCointegrationStrategy:
         # Trading results
         if self.performance_metrics:
             metrics = self.performance_metrics
-            print(f"\n💰 TRADING PERFORMANCE:")
-            print(f"   Total trades: {metrics['total_trades']}")
-            print(f"   Winning trades: {metrics['winning_trades']} ({metrics['win_rate']*100:.1f}%)")
-            print(f"   Losing trades: {metrics['losing_trades']}")
-            print(f"   Total P&L: ${metrics['total_pnl']:.2f}")
-            print(f"   Gross P&L: ${metrics['total_gross_pnl']:.2f}")
-            print(f"   Transaction costs: ${metrics['total_costs']:.2f}")
-            print(f"   Average return per trade: {metrics['avg_return']*100:.3f}%")
-            print(f"   Sharpe ratio: {metrics['sharpe_ratio']:.3f}")
-            print(f"   Profit factor: {metrics['profit_factor']:.2f}")
-            
-            if metrics['winning_trades'] > 0:
-                print(f"   Average winning trade: ${metrics['avg_win']:.2f}")
-            if metrics['losing_trades'] > 0:
-                print(f"   Average losing trade: ${metrics['avg_loss']:.2f}")
+            print(f"\n💰 AGGREGATE TRADING PERFORMANCE:")
+            print(f"   Total P&L:               ${metrics['total_pnl']:.2f}")
+            print(f"   Portfolio Sharpe Ratio:    {metrics['sharpe_ratio']:.2f}")
+            print(f"   Portfolio Sortino Ratio:   {metrics['sortino_ratio']:.2f}")
+            print(f"   Max Drawdown:            ${metrics['max_drawdown']:.2f}")
+            print(f"   Profit Factor:             {metrics['profit_factor']:.2f}")
+            print(f"   Total Trades:              {metrics['total_trades']}")
+            print(f"   Win Rate:                  {metrics['win_rate']*100:.1f}%")
         
         # Pair-by-pair results
         if hasattr(self, 'pair_results') and self.pair_results:
             print(f"\n📈 PAIR-BY-PAIR RESULTS:")
+            
+            trades_df = pd.DataFrame(self.trades)
+            if trades_df.empty:
+                return
+
+            date_range = pd.date_range(start=trades_df['entry_date'].min(), end=trades_df['exit_date'].max(), freq='D')
+
+            for pair_result in self.pair_results:
+                pair_name = pair_result['pair']
+                pair_trades_df = trades_df[trades_df['pair'] == pair_name]
+                
+                pair_sharpe = 0
+                pair_sortino = 0
+
+                if not pair_trades_df.empty:
+                    daily_pnl = pair_trades_df.set_index('exit_date')['net_pnl'].resample('D').sum().reindex(date_range, fill_value=0)
+                    cum_pnl = daily_pnl.cumsum()
+                    daily_returns = cum_pnl.pct_change().fillna(0).replace([np.inf, -np.inf], 0)
+
+                    if daily_returns.std() > 0:
+                        pair_sharpe = (daily_returns.mean() / daily_returns.std()) * np.sqrt(252)
+
+                    downside_returns = daily_returns[daily_returns < 0]
+                    if downside_returns.std() > 0:
+                        pair_sortino = (daily_returns.mean() / downside_returns.std()) * np.sqrt(252)
+                    else:
+                        pair_sortino = np.inf
+
+                pair_result['sharpe'] = pair_sharpe
+                pair_result['sortino'] = pair_sortino
+
             sorted_pairs = sorted(self.pair_results, key=lambda x: x['pnl'], reverse=True)
-            for i, result in enumerate(sorted_pairs[:10]):
-                print(f"   {i+1:2d}. {result['pair']}: {result['trades']} trades, ${result['pnl']:.2f} P&L")
+            for i, result in enumerate(sorted_pairs):
+                print(f"      {i+1:2d}. {result['pair']:<20} "
+                      f"P&L: ${result['pnl']:<8.2f} "
+                      f"Trades: {result['trades']:<4} "
+                      f"Sharpe: {result.get('sharpe', 0):<5.2f} "
+                      f"Sortino: {result.get('sortino', 0):<5.2f}")
         
         # Best pairs summary
         print(f"\n🏆 BEST PERFORMING PAIRS:")
@@ -499,7 +550,7 @@ class RawPricesCointegrationStrategy:
 def main():
     """Main function"""
     parser = argparse.ArgumentParser(
-        description='Raw Prices Cointegration Strategy - Top 20 Pairs',
+        description='Log Prices Cointegration Strategy - Top 20 Pairs',
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     
@@ -514,11 +565,11 @@ def main():
     args = parser.parse_args()
     
     try:
-        strategy = RawPricesCointegrationStrategy(
-            significance_level=args.significance,
-            entry_zscore=args.entry_threshold,
-            exit_zscore=args.exit_threshold,
-            transaction_cost=args.transaction_cost
+        strategy = LogPricesCointegrationStrategy(
+            significance_level=args.significance if args.significance is not None else 0.05,
+            entry_zscore=args.entry_threshold if args.entry_threshold is not None else 1.0,
+            exit_zscore=args.exit_threshold if args.exit_threshold is not None else 0.5,
+            transaction_cost=args.transaction_cost if args.transaction_cost is not None else 0.001
         )
         
         # Execute complete strategy

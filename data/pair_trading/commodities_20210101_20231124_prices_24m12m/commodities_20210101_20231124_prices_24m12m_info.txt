@@ -1,0 +1,43 @@
+PAIR TRADING DATASET: COMMODITIES
+============================================================
+
+📊 DATASET INFORMATION
+Dataset: commodities
+Data Type: prices
+Start Date: 2021-01-01
+Auto-calculated End Date: 2023-11-24
+Requested Periods: 24 months in-sample + 12 months out-sample
+
+📈 PERIOD STRUCTURE (Sequential)
+In-Sample (Pair Formation): 2021-01-01 to 2022-12-07
+Out-Sample (Pair Trading): 2022-12-08 to 2023-11-24
+In-Sample Days: 504
+Out-Sample Days: 252
+Actual Months: 24.0 in-sample + 12.0 out-sample
+
+🎯 DATA QUALITY
+Total Assets: 4
+Missing Values: 0
+In-Sample Missing: 0
+Out-Sample Missing: 0
+
+📊 AVAILABLE DATA TYPES
+Log Returns (R_): 0 columns
+Simple Returns (r_): 0 columns
+Prices (p_adjclose_): 4 columns
+
+🔧 ANALYSIS GUIDANCE
+✅ CORRELATION ANALYSIS: Use log returns (R_ columns)
+   - More stationary (better statistical properties)
+   - Symmetric around zero
+   - Time-additive: ln(P_t/P_0) = Σ log_returns
+   - Standard in academic literature
+
+⚠️  Alternative: Simple returns also work but less preferred
+❌ AVOID: Using raw prices for correlation (non-stationary)
+
+📈 SELECTED ASSETS:
+  1. OIL
+  2. COPPER
+  3. GOLD
+  4. WHEAT

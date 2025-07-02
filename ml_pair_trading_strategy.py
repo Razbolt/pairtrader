@@ -1,569 +1,431 @@
 #!/usr/bin/env python3
 """
-ML-Enhanced Pair Trading Strategy - Quant Research Approach
-- Cointegration for pair selection (lower threshold for more pairs)
-- XGBoost and Random Forest for signal generation
-- Realistic target labeling: entry/hold/exit based on returns
-- Simple and clean implementation
+ML Pair Trading Strategy: Spread Prediction with Walk-Forward Validation
+
+This script implements a machine learning-based pair trading strategy that
+predicts the next day's spread value using an XGBoost regression model.
+It employs a robust walk-forward validation methodology for backtesting,
+ensuring that the model is periodically retrained to adapt to new market data.
+
+Key Components:
+1.  Pair Selection: Uses the Engle-Granger cointegration test to find
+    statistically significant pairs.
+2.  Feature Engineering: Creates technical analysis features (SMAs, EMA,
+    RSI, MACD) from the historical spread series.
+3.  XGBoost Regressor: Predicts the t+1 spread value.
+4.  Walk-Forward Backtesting:
+    - Trains on a fixed window (e.g., 4 years).
+    - Predicts on a subsequent period.
+    - Retrains the model every 5 trading days to capture evolving dynamics.
+5.  Trading Logic: Executes trades based on the predicted change in spread
+    compared against a transaction cost threshold.
 """
 
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
 from pathlib import Path
 import argparse
 import warnings
-from datetime import datetime, timedelta
-from scipy.stats import binomtest
 from statsmodels.tsa.stattools import coint
 from statsmodels.regression.linear_model import OLS
-
-# ML imports
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import TimeSeriesSplit, RandomizedSearchCV
-from sklearn.metrics import classification_report, confusion_matrix
 import xgboost as xgb
+import warnings
+from datetime import timedelta
 import joblib
+import sys
 
 warnings.filterwarnings('ignore')
 
-class MLEnhancedStrategy:
-    def __init__(self, transaction_cost=0.001, max_pairs=30, short_selling=True):
-        self.transaction_cost = transaction_cost
-        self.max_pairs = max_pairs
-        self.short_selling = short_selling
+class MLSpreadPredictionStrategy:
+    """
+    Implements a pair trading strategy using an XGBoost model to predict
+    spread values and a walk-forward validation approach for backtesting.
+    This version trains a specialized model for each cointegrated pair.
+    """
+    def __init__(self, training_window_years=4, retrain_interval_days=5, significance_level=0.05, min_pairs=5, max_stocks=100, tc_threshold=0.0028):
+        self.training_window = timedelta(days=training_window_years * 365)
+        self.retrain_interval = timedelta(days=retrain_interval_days)
+        self.significance_level = significance_level
+        self.min_pairs = min_pairs
+        self.max_stocks = max_stocks
+        self.tc_threshold = tc_threshold
         self.cointegrated_pairs = []
-        self.models = {}
-        self.trades = []
-        self.performance = {}
-        
+        self.all_trades = {} # Dictionary to store trades per pair
+
     def load_data(self, data_path):
-        """Load formation and trading data"""
+        """
+        Loads and combines formation and trading data into a single continuous series.
+        This is necessary for the walk-forward validation approach.
+        """
         data_path = Path(data_path)
-        
-        # Find files
-        formation_file = list(data_path.glob("*_in_sample_formation.csv"))[0]
-        trading_file = list(data_path.glob("*_out_sample_trading.csv"))[0]
-        
-        print("🚀 ML-ENHANCED PAIR TRADING STRATEGY")
+        formation_file = next(data_path.glob("*_in_sample_formation.csv"), None)
+        trading_file = next(data_path.glob("*_out_sample_trading.csv"), None)
+
+        if not formation_file or not trading_file:
+            raise FileNotFoundError("Could not find formation or trading CSV files.")
+
+        print("🚀 ML SPREAD PREDICTION STRATEGY")
         print("="*60)
-        print(f"📈 Formation: {formation_file.name}")
-        print(f"💰 Trading: {trading_file.name}")
-        
-        # Load data
-        self.formation_data = pd.read_csv(formation_file)
-        self.trading_data = pd.read_csv(trading_file)
-        
-        # Set date index
-        for df in [self.formation_data, self.trading_data]:
+        print(f"📈 Loading Formation Data: {formation_file.name}")
+        print(f"💰 Loading Trading Data:   {trading_file.name}")
+            
+        formation_df = pd.read_csv(formation_file)
+        trading_df = pd.read_csv(trading_file)
+
+        # Standardize date column and set as index
+        for df in [formation_df, trading_df]:
             date_col = 'period' if 'period' in df.columns else 'date'
             df[date_col] = pd.to_datetime(df[date_col])
             df.set_index(date_col, inplace=True)
+            
+        # Combine data for continuous backtest
+        self.full_data = pd.concat([formation_df, trading_df]).sort_index()
+        self.price_columns = [col for col in self.full_data.columns if col.startswith('p_adjclose_') or col.startswith('P_')]
         
-        # Get price columns
-        self.price_columns = [col for col in self.formation_data.columns if col.startswith('p_adjclose_')]
+        # Handle commodity data which may not have prefixes
         if not self.price_columns:
-            self.price_columns = [col for col in self.formation_data.columns if col.startswith('P_')]
-        
-        self.formation_prices = self.formation_data[self.price_columns]
-        self.trading_prices = self.trading_data[self.price_columns]
-        
-        print(f"✅ Loaded {len(self.price_columns)} stocks")
+            # Assuming remaining columns are prices for commodities
+            self.price_columns = [col for col in self.full_data.columns if not col.startswith('v_')]
+
+        self.all_prices = self.full_data[self.price_columns]
+        print(f"✅ Combined data from {self.full_data.index.min():%Y-%m-%d} to {self.full_data.index.max():%Y-%m-%d}")
+        print(f"✅ Found {len(self.price_columns)} price series.")
         return self
-    
-    def find_cointegrated_pairs(self, significance_level=0.10):  # Lower threshold for more pairs
-        """Find cointegrated pairs using Engle-Granger test"""
-        print(f"\n🔍 Finding cointegrated pairs (significance: {significance_level*100}%)")
+
+    def find_top_cointegrated_pairs(self):
+        """
+        Finds the top N most strongly cointegrated pairs from the dataset.
+        """
+        print(f"\n🔍 Finding top {self.min_pairs} cointegrated pairs (testing top {self.max_stocks} stocks, sig < {self.significance_level*100}%)")
         
-        all_pairs = []
-        tested_pairs = 0
+        all_found_pairs = []
         
-        # Test top 150 stocks for more pairs
-        top_stocks = self.price_columns[:250]
+        stocks_to_test = self.price_columns[:self.max_stocks]
         
-        for i, stock1 in enumerate(top_stocks):
-            for j, stock2 in enumerate(top_stocks):
-                if i < j:
-                    tested_pairs += 1
-                    
-                    # Test cointegration
-                    s1 = self.formation_prices[stock1].dropna()
-                    s2 = self.formation_prices[stock2].dropna()
-                    common_dates = s1.index.intersection(s2.index)
-                    
-                    if len(common_dates) < 30:
-                        continue
-                    
-                    s1_clean = s1[common_dates]
-                    s2_clean = s2[common_dates]
-                    
-                    try:
-                        coint_stat, p_value, critical_values = coint(s1_clean, s2_clean)
+        for i, stock1 in enumerate(stocks_to_test):
+            for j, stock2 in enumerate(stocks_to_test[i+1:]):
+                s1 = self.all_prices[stock1].dropna()
+                s2 = self.all_prices[stock2].dropna()
+                common_dates = s1.index.intersection(s2.index)
+
+                if len(common_dates) < 252: continue
+
+                s1_clean, s2_clean = s1[common_dates], s2[common_dates]
+                
+                try:
+                    coint_stat, p_value, _ = coint(s1_clean, s2_clean)
+                    if p_value < self.significance_level:
                         ols_result = OLS(s1_clean, s2_clean).fit()
                         hedge_ratio = ols_result.params[0]
-                        r_squared = ols_result.rsquared
-                        
-                        if p_value < significance_level:
-                            all_pairs.append({
-                                'stock1': stock1, 'stock2': stock2,
-                                'stock1_name': stock1.replace('p_adjclose_', '').replace('P_', ''),
-                                'stock2_name': stock2.replace('p_adjclose_', '').replace('P_', ''),
-                                'p_value': p_value, 'hedge_ratio': hedge_ratio,
-                                'r_squared': r_squared, 'coint_stat': coint_stat
-                            })
-                    except:
-                        continue
+                        all_found_pairs.append({
+                            'stock1': stock1, 'stock2': stock2,
+                            'stock1_name': stock1.replace('p_adjclose_', '').replace('P_', ''),
+                            'stock2_name': stock2.replace('p_adjclose_', '').replace('P_', ''),
+                            'p_value': p_value, 'hedge_ratio': hedge_ratio
+                        })
+                except Exception:
+                    continue
         
-        # Sort by cointegration strength and take top pairs
-        all_pairs = sorted(all_pairs, key=lambda x: x['p_value'])
-        self.cointegrated_pairs = all_pairs[:self.max_pairs]
-        
-        print(f"   Found {len(self.cointegrated_pairs)} cointegrated pairs")
-        for i, pair in enumerate(self.cointegrated_pairs[:15]):
-            print(f"   {i+1}. {pair['stock1_name']}-{pair['stock2_name']}: p={pair['p_value']:.4f}, β={pair['hedge_ratio']:.3f}")
-        
-        return self
-    
-    def create_features_and_targets(self, prices, pair_info):
-        """Create features and realistic targets based on returns (supports long/short)"""
-        stock1, stock2 = pair_info['stock1'], pair_info['stock2']
-        hedge_ratio = pair_info['hedge_ratio']
-        
-        # Get price data
-        p1 = prices[stock1].dropna()
-        p2 = prices[stock2].dropna()
-        common_dates = p1.index.intersection(p2.index)
-        
-        if len(common_dates) < 100:
-            return None, None, None, None
-        
-        p1, p2 = p1[common_dates], p2[common_dates]
-        
-        # Calculate cointegrating spread
-        spread = p1 - hedge_ratio * p2
-        spread_mean = spread.rolling(20).mean()
-        spread_std = spread.rolling(20).std()
-        zscore = (spread - spread_mean) / spread_std
-        
-        # Simple features
-        features = pd.DataFrame(index=common_dates)
-        features['zscore'] = zscore
-        features['zscore_ma5'] = zscore.rolling(5).mean()
-        features['zscore_ma10'] = zscore.rolling(10).mean()
-        features['zscore_std'] = zscore.rolling(10).std()
-        
-        # Price ratio features
-        features['price_ratio'] = p1 / p2
-        features['price_ratio_ma20'] = features['price_ratio'].rolling(20).mean()
-        features['price_ratio_std'] = features['price_ratio'].rolling(10).std()
-        
-        # Volatility features
-        features['p1_volatility'] = p1.pct_change().rolling(10).std()
-        features['p2_volatility'] = p2.pct_change().rolling(10).std()
-        
-        # Target: Multi-class (0=hold, 1=long, 2=short) or binary (0=hold, 1=long)
-        if self.short_selling:
-            features['target'] = 0  # Default: hold
+        if all_found_pairs:
+            # Sort by p-value and select the top N
+            sorted_pairs = sorted(all_found_pairs, key=lambda x: x['p_value'])
+            self.cointegrated_pairs = sorted_pairs[:self.min_pairs]
+            print(f"🏆 Found {len(self.cointegrated_pairs)} pairs meeting criteria:")
+            for k, pair_info in enumerate(self.cointegrated_pairs):
+                print(f"   {k+1}. {pair_info['stock1_name']}-{pair_info['stock2_name']} (p-value: {pair_info['p_value']:.6f}, β: {pair_info['hedge_ratio']:.4f})")
         else:
-            features['target'] = 0  # Default: hold
-        
-        for i in range(len(features) - 10):  # Look ahead 10 days
-            current_zscore = features['zscore'].iloc[i]
-            
-            # Calculate future spread return (next 10 days)
-            future_spread = spread.iloc[i+10]
-            current_spread = spread.iloc[i]
-            spread_return = (future_spread - current_spread) / abs(current_spread) if abs(current_spread) > 0 else 0
-            
-            if self.short_selling:
-                # Multi-class: 0=hold, 1=long, 2=short
-                if current_zscore < -1.5 and spread_return > 0.02:  # Low zscore, spread increases
-                    features['target'].iloc[i] = 1  # entry_long
-                elif current_zscore > 1.5 and spread_return < -0.02:  # High zscore, spread decreases
-                    features['target'].iloc[i] = 2  # entry_short
-                else:
-                    features['target'].iloc[i] = 0  # hold
-            else:
-                # Binary: 0=hold, 1=long only
-                if current_zscore < -1.5 and spread_return > 0.02:  # Low zscore, spread increases
-                    features['target'].iloc[i] = 1  # entry_long
-                else:
-                    features['target'].iloc[i] = 0  # hold
-        
-        # Remove NaN values
-        features = features.dropna()
-        
-        return features, p1, p2, spread
-    
-    def train_xgboost(self, X, y):
-        """Train XGBoost with enhanced hyperparameter tuning"""
-        print("   Training XGBoost...")
-        
-        # Enhanced parameter space
-        param_dist = {
-            'n_estimators': [100, 200, 300, 500],
-            'max_depth': [3, 5, 7, 9, 11],
-            'learning_rate': [0.01, 0.05, 0.1, 0.15, 0.2],
-            'subsample': [0.7, 0.8, 0.9, 1.0],
-            'colsample_bytree': [0.7, 0.8, 0.9, 1.0],
-            'colsample_bylevel': [0.7, 0.8, 0.9, 1.0],
-            'min_child_weight': [1, 3, 5, 7],
-            'reg_alpha': [0, 0.1, 0.5, 1.0],
-            'reg_lambda': [0, 0.1, 0.5, 1.0],
-            'gamma': [0, 0.1, 0.2, 0.5]
-        }
-        
-        # Time series cross-validation
-        tscv = TimeSeriesSplit(n_splits=5)
-        
-        # Enhanced random search
-        xgb_model = xgb.XGBClassifier(random_state=42, eval_metric='mlogloss')
-        random_search = RandomizedSearchCV(
-            xgb_model, param_dist, n_iter=50, cv=tscv, 
-            scoring='f1_weighted', random_state=42, n_jobs=-1,
-            verbose=0
-        )
-        
-        random_search.fit(X, y)
-        
-        print(f"     Best score: {random_search.best_score_:.3f}")
-        print(f"     Best params: {random_search.best_params_}")
-        
-        return random_search.best_estimator_
-    
-    def train_random_forest(self, X, y):
-        """Train Random Forest with enhanced hyperparameter tuning"""
-        print("   Training Random Forest...")
-        
-        # Enhanced parameter space
-        param_dist = {
-            'n_estimators': [100, 200, 300, 500, 1000],
-            'max_depth': [5, 10, 15, 20, None],
-            'min_samples_split': [2, 5, 10, 20],
-            'min_samples_leaf': [1, 2, 4, 8],
-            'max_features': ['sqrt', 'log2', None, 0.5, 0.7],
-            'bootstrap': [True, False],
-            'max_samples': [0.7, 0.8, 0.9, None],
-            'class_weight': ['balanced', 'balanced_subsample', None]
-        }
-        
-        tscv = TimeSeriesSplit(n_splits=5)
-        rf_model = RandomForestClassifier(random_state=42)
-        random_search = RandomizedSearchCV(
-            rf_model, param_dist, n_iter=50, cv=tscv,
-            scoring='f1_weighted', random_state=42, n_jobs=-1,
-            verbose=0
-        )
-        
-        random_search.fit(X, y)
-        
-        print(f"     Best score: {random_search.best_score_:.3f}")
-        print(f"     Best params: {random_search.best_params_}")
-        
-        return random_search.best_estimator_
-    
-    def train_models(self):
-        """Train all ML models"""
-        print(f"\n🤖 Training ML models on {len(self.cointegrated_pairs)} pairs...")
-        
-        # Combine data from all pairs
-        all_features = []
-        all_targets = []
-        
-        for pair in self.cointegrated_pairs:
-            features, _, _, _ = self.create_features_and_targets(self.formation_prices, pair)
-            if features is not None:
-                feature_cols = [col for col in features.columns if col != 'target']
-                all_features.append(features[feature_cols])
-                all_targets.append(features['target'])
-        
-        if not all_features:
-            print("❌ No training data found")
-            return self
-        
-        # Combine all data
-        X = pd.concat(all_features, axis=0)
-        y = pd.concat(all_targets, axis=0)
-        
-        print(f"   Training on {len(X)} samples")
-        print(f"   Target distribution:")
-        for target in y.value_counts().items():
-            print(f"     {target[0]}: {target[1]} ({target[1]/len(y)*100:.1f}%)")
-        
-        # Train models
-        self.models['xgboost'] = self.train_xgboost(X, y)
-        self.models['random_forest'] = self.train_random_forest(X, y)
-        
+            print("❌ No cointegrated pairs found.")
         return self
-    
-    def generate_signals(self, features, pair_info):
-        """Generate trading signals (supports long/short)"""
-        feature_cols = [col for col in features.columns if col != 'target']
-        X = features[feature_cols]
-        
-        # Get predictions from both models
-        predictions = {}
-        for name, model in self.models.items():
-            if hasattr(model, 'predict_proba'):
-                pred_proba = model.predict_proba(X)
-                if self.short_selling and pred_proba.shape[1] == 3:
-                    # Multi-class: [hold, long, short]
-                    predictions[name] = {
-                        'long': pred_proba[:, 1],  # Class 1 = long entry
-                        'short': pred_proba[:, 2]  # Class 2 = short entry
-                    }
-                else:
-                    # Binary: [hold, long] or fallback
-                    long_prob = pred_proba[:, 1] if pred_proba.shape[1] > 1 else pred_proba[:, 0]
-                    predictions[name] = {
-                        'long': long_prob,
-                        'short': np.zeros_like(long_prob)  # No short signals
-                    }
-            else:
-                pred = model.predict(X)
-                if self.short_selling:
-                    long_signal = (pred == 1).astype(float)
-                    short_signal = (pred == 2).astype(float)
-                    predictions[name] = {
-                        'long': long_signal,
-                        'short': short_signal
-                    }
-                else:
-                    long_signal = (pred == 1).astype(float)
-                    predictions[name] = {
-                        'long': long_signal,
-                        'short': np.zeros_like(long_signal)
-                    }
-        
-        # Ensemble probabilities
-        ensemble_long = np.mean([pred['long'] for pred in predictions.values()], axis=0)
-        ensemble_short = np.mean([pred['short'] for pred in predictions.values()], axis=0)
-        
-        return ensemble_long, ensemble_short
-    
-    def backtest_strategy(self):
-        """Backtest the ML-enhanced strategy (supports long/short)"""
-        mode = "LONG & SHORT" if self.short_selling else "LONG ONLY"
-        print(f"\n💰 Backtesting ML-enhanced strategy ({mode})...")
-        
-        self.trades_by_model = {name: [] for name in self.models}
-        self.trades_by_model['ensemble'] = []
-        
-        for pair in self.cointegrated_pairs:
-            features, p1, p2, spread = self.create_features_and_targets(self.trading_prices, pair)
-            if features is None:
-                continue
-            feature_cols = [col for col in features.columns if col != 'target']
-            X = features[feature_cols]
-            
-            # Get model probabilities for both long and short
-            model_probs = {}
-            for name, model in self.models.items():
-                long_probs, short_probs = self.generate_signals(features, pair)
-                model_probs[name] = {'long': long_probs, 'short': short_probs}
-            
-            # Ensemble
-            ensemble_long = np.mean([probs['long'] for probs in model_probs.values()], axis=0)
-            ensemble_short = np.mean([probs['short'] for probs in model_probs.values()], axis=0)
-            model_probs['ensemble'] = {'long': ensemble_long, 'short': ensemble_short}
 
-            # For each model (and ensemble), backtest
-            for model_name, probs in model_probs.items():
-                long_probs = probs['long']
-                short_probs = probs['short']
-                
-                # Generate signals
-                long_signals = (long_probs > 0.6) & (features['zscore'] < -1.0)
-                short_signals = (short_probs > 0.6) & (features['zscore'] > 1.0) if self.short_selling else np.zeros_like(long_signals, dtype=bool)
-                
-                position = 0  # 0=no position, 1=long, -1=short
-                entry_info = {}
-                trades = self.trades_by_model[model_name]
-                
-                for i, date in enumerate(features.index):
-                    if position == 0:  # No position
-                        if long_signals[i]:  # Enter long position
-                            position = 1
-                            entry_info = {
-                                'entry_date': date,
-                                'entry_zscore': features['zscore'].iloc[i],
-                                'entry_p1': p1[date],
-                                'entry_p2': p2[date],
-                                'confidence': long_probs[i],
-                                'position_type': 'Long',
-                                'pair': f"{pair['stock1_name']}-{pair['stock2_name']}"
-                            }
-                        elif short_signals[i] and self.short_selling:  # Enter short position
-                            position = -1
-                            entry_info = {
-                                'entry_date': date,
-                                'entry_zscore': features['zscore'].iloc[i],
-                                'entry_p1': p1[date],
-                                'entry_p2': p2[date],
-                                'confidence': short_probs[i],
-                                'position_type': 'Short',
-                                'pair': f"{pair['stock1_name']}-{pair['stock2_name']}"
-                            }
-                    
-                    elif position == 1:  # In long position, check exit
-                        current_zscore = features['zscore'].iloc[i]
-                        
-                        # Exit conditions for long position
-                        exit_signal = (
-                            current_zscore > 0 or  # Spread above mean
-                            abs(current_zscore) < 0.5  # Close to mean
-                        )
-                        
-                        if exit_signal:
-                            # Calculate P&L for long spread position
-                            exit_p1, exit_p2 = p1[date], p2[date]
-                            hedge_ratio = pair['hedge_ratio']
-                            
-                            # Long spread: Long P1, Short hedge_ratio*P2
-                            pnl = (exit_p1 - entry_info['entry_p1']) - hedge_ratio * (exit_p2 - entry_info['entry_p2'])
-                            
-                            # Transaction costs
-                            trade_value = entry_info['entry_p1'] + hedge_ratio * entry_info['entry_p2']
-                            costs = 2 * self.transaction_cost * trade_value
-                            net_pnl = pnl - costs
-                            
-                            trades.append({
-                                'pair': entry_info['pair'],
-                                'entry_date': entry_info['entry_date'],
-                                'exit_date': date,
-                                'position': entry_info['position_type'],
-                                'entry_zscore': entry_info['entry_zscore'],
-                                'exit_zscore': current_zscore,
-                                'confidence': entry_info['confidence'],
-                                'pnl': net_pnl,
-                                'days_held': (date - entry_info['entry_date']).days
-                            })
-                            
-                            position = 0
-                            entry_info = {}
-                    
-                    elif position == -1:  # In short position, check exit
-                        current_zscore = features['zscore'].iloc[i]
-                        
-                        # Exit conditions for short position
-                        exit_signal = (
-                            current_zscore < 0 or  # Spread below mean
-                            abs(current_zscore) < 0.5  # Close to mean
-                        )
-                        
-                        if exit_signal:
-                            # Calculate P&L for short spread position
-                            exit_p1, exit_p2 = p1[date], p2[date]
-                            hedge_ratio = pair['hedge_ratio']
-                            
-                            # Short spread: Short P1, Long hedge_ratio*P2
-                            pnl = (entry_info['entry_p1'] - exit_p1) + hedge_ratio * (exit_p2 - entry_info['entry_p2'])
-                            
-                            # Transaction costs
-                            trade_value = entry_info['entry_p1'] + hedge_ratio * entry_info['entry_p2']
-                            costs = 2 * self.transaction_cost * trade_value
-                            net_pnl = pnl - costs
-                            
-                            trades.append({
-                                'pair': entry_info['pair'],
-                                'entry_date': entry_info['entry_date'],
-                                'exit_date': date,
-                                'position': entry_info['position_type'],
-                                'entry_zscore': entry_info['entry_zscore'],
-                                'exit_zscore': current_zscore,
-                                'confidence': entry_info['confidence'],
-                                'pnl': net_pnl,
-                                'days_held': (date - entry_info['entry_date']).days
-                            })
-                            
-                            position = 0
-                            entry_info = {}
+    def _calculate_features(self, spread_series):
+        """Calculates technical analysis features for the spread."""
+        features = pd.DataFrame(index=spread_series.index)
         
-        # Calculate performance for each model
-        self.performance_by_model = {}
-        for model_name, trades in self.trades_by_model.items():
-            if not trades:
-                self.performance_by_model[model_name] = None
+        # SMAs
+        features['SMA5'] = spread_series.rolling(window=5).mean()
+        features['SMA10'] = spread_series.rolling(window=10).mean()
+        features['SMA15'] = spread_series.rolling(window=15).mean()
+        
+        # EMA
+        features['EMA9'] = spread_series.ewm(span=9, adjust=False).mean()
+        
+        # RSI
+        delta = spread_series.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / loss
+        features['RSI'] = 100 - (100 / (1 + rs))
+        
+        # MACD
+        ema12 = spread_series.ewm(span=12, adjust=False).mean()
+        ema26 = spread_series.ewm(span=26, adjust=False).mean()
+        features['MACD'] = ema12 - ema26
+        
+        # Previous day's spread
+        features['prev_spread'] = spread_series.shift(1)
+        
+        return features.dropna()
+
+    def train_xgboost_regressor(self, X_train, y_train, X_eval, y_eval):
+        """Trains the XGBoost regression model with early stopping."""
+        params = {
+            'objective': 'reg:squarederror',
+            'n_estimators': 400,
+            'max_depth': 8,
+            'learning_rate': 0.05,
+            'reg_lambda': 1,
+            'gamma': 0.005,
+            'eval_metric': 'rmse',
+            'early_stopping_rounds': 5
+        }
+        
+        model = xgb.XGBRegressor(**params)
+        model.fit(X_train, y_train,
+                   eval_set=[(X_eval, y_eval)],
+                   verbose=False)
+        return model
+
+    def run_walk_forward_backtest(self, save_results_path=None):
+        """
+        Executes the walk-forward backtesting for each selected pair,
+        training a specialized model for each one.
+        """
+        if not self.cointegrated_pairs:
+            return
+
+        all_daily_pnl_dfs = []
+
+        for pair_info in self.cointegrated_pairs:
+            pair_name = f"{pair_info['stock1_name']}-{pair_info['stock2_name']}"
+            print(f"\n--- Backtesting Pair: {pair_name} ---")
+
+            s1 = self.all_prices[pair_info['stock1']]
+            s2 = self.all_prices[pair_info['stock2']]
+            common_dates = s1.index.intersection(s2.index)
+            
+            spread = s1[common_dates] - pair_info['hedge_ratio'] * s2[common_dates]
+            
+            features = self._calculate_features(spread)
+            target = spread.shift(-1)
+            
+            aligned_index = features.index.intersection(target.index)
+            X = features.loc[aligned_index]
+            y = target.loc[aligned_index]
+
+            backtest_start_date = X.index.min() + self.training_window
+            backtest_date_range = X.index[X.index >= backtest_start_date]
+
+            if backtest_date_range.empty:
+                print(f"   ❌ Backtest failed for this pair: Not enough data for the training window.")
                 continue
+
+            pair_trades = []
+            position = 0
+            model = None
+            last_retrain_date = backtest_date_range.min() - pd.Timedelta(days=999)
+
+            for current_date in backtest_date_range:
+                if (current_date - last_retrain_date) >= self.retrain_interval:
+                    train_start, train_end_date = current_date - self.training_window, current_date - pd.Timedelta(days=30)
+                    eval_start_date = train_end_date + pd.Timedelta(days=1)
+                    X_train, y_train = X.loc[train_start:train_end_date], y.loc[train_start:train_end_date]
+                    X_eval, y_eval = X.loc[eval_start_date:current_date], y.loc[eval_start_date:current_date]
+                    if not X_train.empty and not y_train.empty and not X_eval.empty and not y_eval.empty:
+                        model = self.train_xgboost_regressor(X_train, y_train, X_eval, y_eval)
+                        last_retrain_date = current_date
+                
+                if model:
+                    today_features = X.loc[[current_date]]
+                    predicted_spread_tomorrow = model.predict(today_features)[0]
+                    actual_spread_today = spread.loc[current_date]
+                    delta_t1 = predicted_spread_tomorrow - actual_spread_today
+
+                    if position == 0:
+                        if delta_t1 > self.tc_threshold:
+                            position, entry_price_s1, entry_price_s2, entry_date = 1, s1.loc[current_date], s2.loc[current_date], current_date
+                        elif delta_t1 < -self.tc_threshold:
+                            position, entry_price_s1, entry_price_s2, entry_date = -1, s1.loc[current_date], s2.loc[current_date], current_date
+                    elif (position == 1 and delta_t1 < 0) or (position == -1 and delta_t1 > 0):
+                        exit_price_s1, exit_price_s2 = s1.loc[current_date], s2.loc[current_date]
+                        pnl = (exit_price_s1 - entry_price_s1) * position + pair_info['hedge_ratio'] * (entry_price_s2 - exit_price_s2) * position
+                        trade_value = entry_price_s1 + pair_info['hedge_ratio'] * entry_price_s2
+                        pair_trades.append({'entry_date': entry_date, 'exit_date': current_date, 'pnl': pnl, 'type': 'Long' if position == 1 else 'Short', 'trade_value': trade_value})
+                        position = 0
             
-            # Split trades by position type
-            long_trades = [t for t in trades if t['position'] == 'Long']
-            short_trades = [t for t in trades if t['position'] == 'Short']
-            
-            total_trades = len(trades)
-            winning_trades = sum(1 for trade in trades if trade['pnl'] > 0)
-            total_pnl = sum(trade['pnl'] for trade in trades)
-            avg_conf = np.mean([trade['confidence'] for trade in trades])
-            
-            self.performance_by_model[model_name] = {
-                'total_trades': total_trades,
-                'long_trades': len(long_trades),
-                'short_trades': len(short_trades),
-                'winning_trades': winning_trades,
-                'win_rate': winning_trades / total_trades,
-                'total_pnl': total_pnl,
-                'avg_pnl': total_pnl / total_trades,
-                'avg_confidence': avg_conf
-            }
+            trades_df = pd.DataFrame(pair_trades)
+            trades_df['cum_pnl'] = trades_df['pnl'].cumsum()
+            daily_pnl_df = trades_df.set_index('exit_date')['pnl'].resample('D').sum().fillna(0).reset_index()
+            daily_pnl_df.rename(columns={'exit_date': 'date'}, inplace=True)
+
+            # Store results for this pair
+            self.all_trades[pair_name] = trades_df
+            all_daily_pnl_dfs.append(daily_pnl_df)
         
-        return self
-    
-    def print_results(self):
-        """Print comprehensive results for each model and ensemble"""
-        mode = "LONG & SHORT" if self.short_selling else "LONG ONLY"
-        print(f"\n" + "="*60)
-        print(f"📊 ML-ENHANCED STRATEGY RESULTS BY MODEL ({mode})")
-        print("="*60)
+        # Now print the full summary
+        self.print_full_results(all_daily_pnl_dfs, save_results_path)
+
+    def print_full_results(self, all_daily_pnl_dfs, root_output_dir):
+        """
+        Calculates and prints aggregated portfolio results and per-pair breakdowns.
+        """
+        print("\n" + "="*70)
+        print("📊 AGGREGATED PORTFOLIO RESULTS")
+        print("="*70)
+
+        # --- AGGREGATED PORTFOLIO CALCULATION ---
+        portfolio_pnl_df = pd.concat(all_daily_pnl_dfs)
+        if portfolio_pnl_df.empty:
+            portfolio_pnl = pd.Series(dtype=float)
+        else:
+            portfolio_pnl = portfolio_pnl_df.groupby('date')['pnl'].sum().sort_index()
+
+        portfolio_cum_pnl = portfolio_pnl.cumsum()
         
-        for model_name, perf in self.performance_by_model.items():
-            if perf is None:
-                print(f"\n❌ No trades executed for {model_name}")
-                continue
-            print(f"\n💰 PERFORMANCE ({model_name.upper()}):")
-            print(f"   Total trades: {perf['total_trades']}")
-            if self.short_selling:
-                print(f"   Long trades: {perf['long_trades']}")
-                print(f"   Short trades: {perf['short_trades']}")
-            print(f"   Winning trades: {perf['winning_trades']} ({perf['win_rate']*100:.1f}%)")
-            print(f"   Total P&L: ${perf['total_pnl']:.2f}")
-            print(f"   Average P&L per trade: ${perf['avg_pnl']:.2f}")
-            print(f"   Average confidence: {perf['avg_confidence']:.3f}")
+        portfolio_daily_returns = portfolio_cum_pnl.pct_change().fillna(0) # Using CUMULATIVE P&L to get returns
+        
+        # Calculate Aggregated Sharpe Ratio
+        if portfolio_daily_returns.std() > 0:
+            portfolio_sharpe = (portfolio_daily_returns.mean() / portfolio_daily_returns.std()) * np.sqrt(252)
+        else:
+            portfolio_sharpe = 0
+
+        # Calculate Aggregated Sortino Ratio
+        downside_returns_portfolio = portfolio_daily_returns[portfolio_daily_returns < 0]
+        downside_deviation_portfolio = downside_returns_portfolio.std()
+        if downside_deviation_portfolio > 0:
+            sortino_ratio_portfolio = (portfolio_daily_returns.mean() / downside_deviation_portfolio) * np.sqrt(252)
+        else:
+            sortino_ratio_portfolio = np.inf
+
+
+        total_pnl = portfolio_cum_pnl.iloc[-1] if not portfolio_cum_pnl.empty else 0
+        
+        # Calculate Drawdown
+        max_drawdown = (portfolio_cum_pnl - portfolio_cum_pnl.cummax()).min()
+
+        # Combine all trades for aggregate stats
+        full_trades_df = pd.concat(self.all_trades.values())
+        total_trades = len(full_trades_df)
+        
+        if total_trades > 0:
+            wins = full_trades_df[full_trades_df['pnl'] > 0]
+            losses = full_trades_df[full_trades_df['pnl'] < 0]
+            win_rate = (len(wins) / total_trades) * 100 if total_trades > 0 else 0
             
-            # Top pairs
-            trades = self.trades_by_model[model_name]
-            pair_pnl = {}
-            for trade in trades:
-                pair = trade['pair']
-                if pair not in pair_pnl:
-                    pair_pnl[pair] = 0
-                pair_pnl[pair] += trade['pnl']
-            top_pairs = sorted(pair_pnl.items(), key=lambda x: x[1], reverse=True)[:5]
-            print(f"   🏆 Top pairs:")
-            for pair, pnl in top_pairs:
-                print(f"      {pair}: ${pnl:.2f}")
+            gross_profit = wins['pnl'].sum()
+            gross_loss = abs(losses['pnl'].sum())
+            profit_factor = gross_profit / gross_loss if gross_loss > 0 else np.inf
+            avg_pnl_per_trade = full_trades_df['pnl'].mean()
+        else:
+            win_rate, profit_factor, avg_pnl_per_trade = 0, 0, 0
+
+        print("PERFORMANCE METRICS")
+        print("----------------------------------------------------")
+        print(f"Total Portfolio P&L:         $ {total_pnl:10.2f}")
+        print(f"Portfolio Sharpe Ratio:        {portfolio_sharpe:10.2f}")
+        print(f"Portfolio Sortino Ratio:       {sortino_ratio_portfolio:10.2f}")
+        print(f"Max Drawdown:                $ {abs(max_drawdown):10.2f}")
+        print(f"Profit Factor:                 {profit_factor:10.2f}")
+        print("----------------------------------------------------")
+        print(f"Total Trades:                  {total_trades:10d}")
+        print(f"Win Rate:                      {win_rate:10.2f}%")
+        print(f"Avg P&L per Trade:           $ {avg_pnl_per_trade:10.2f}")
+        print("----------------------------------------------------")
+        
+        print("\n--- PERFORMANCE BY PAIR ---")
+        
+        # Determine the full date range for the trading period for accurate daily stats
+        all_trades_df = pd.concat(self.all_trades.values())
+        if not all_trades_df.empty:
+            trading_start_date = all_trades_df['entry_date'].min()
+            trading_end_date = all_trades_df['exit_date'].max()
+            date_range = pd.date_range(start=trading_start_date, end=trading_end_date, freq='D')
+
+        for pair_name, trades_df in self.all_trades.items():
+            pair_pnl_total = trades_df['pnl'].sum()
+            pair_win_rate = (trades_df['pnl'] > 0).mean() * 100 if not trades_df.empty else 0
+            
+            pair_sharpe = 0
+            pair_sortino = 0
+
+            # Calculate per-pair Sharpe and Sortino based on a full daily P&L series
+            if not trades_df.empty and not all_trades_df.empty:
+                # Create daily P&L series for the pair, reindexed to the full trading period
+                pair_daily_pnl = trades_df.set_index('exit_date')['pnl'].resample('D').sum().reindex(date_range, fill_value=0)
+                pair_cum_pnl = pair_daily_pnl.cumsum()
+                
+                # Calculate returns from the *cumulative* P&L to measure return on equity
+                pair_daily_returns = pair_cum_pnl.pct_change().fillna(0).replace([np.inf, -np.inf], 0)
+
+                if pair_daily_returns.std() > 0:
+                    pair_sharpe = (pair_daily_returns.mean() / pair_daily_returns.std()) * np.sqrt(252)
+                
+                downside_returns = pair_daily_returns[pair_daily_returns < 0]
+                downside_deviation = downside_returns.std()
+                if downside_deviation > 0:
+                    pair_sortino = (pair_daily_returns.mean() / downside_deviation) * np.sqrt(252)
+                else:
+                    pair_sortino = np.inf
+            
+            print(f"\nPair: {pair_name}")
+            print(f"  Trades: {len(trades_df)}, P&L: ${pair_pnl_total:.2f}, Win Rate: {pair_win_rate:.2f}%, Sharpe: {pair_sharpe:.2f}, Sortino: {pair_sortino:.2f}")
+
+    def save_pair_results(self, pair_name, trades_df, model, root_output_dir):
+        """Saves backtesting results for a single pair to a dedicated folder."""
+        output_dir = Path(root_output_dir) / pair_name
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        trades_df.to_csv(output_dir / "backtest_trades.csv", index=False)
+        joblib.dump(model, output_dir / "xgboost_model.joblib")
+        
+        print(f"   💾 Results for {pair_name} saved to: {output_dir}")
 
 def main():
-    parser = argparse.ArgumentParser(description='ML-Enhanced Pair Trading Strategy')
-    parser.add_argument('data_path', help='Path to data directory')
-    parser.add_argument('--max-pairs', type=int, default=30, help='Maximum pairs')
-    parser.add_argument('--transaction-cost', type=float, default=0.001, help='Transaction cost')
-    parser.add_argument('--significance', type=float, default=0.05, help='Cointegration significance')
-    parser.add_argument('--short-selling', action='store_true', help='Allow short selling')
+    parser = argparse.ArgumentParser(
+        description="ML Pair Trading with a Specialized Model per Pair.",
+        formatter_class=argparse.RawTextHelpFormatter
+    )
+    parser.add_argument('data_path', type=str, help='Path to the directory containing pair trading data.')
+    parser.add_argument('--min-pairs', type=int, default=5, help='Number of top cointegrated pairs to backtest (default: 5).')
+    parser.add_argument('--max-stocks', type=int, default=100, help='Number of top stocks to search for pairs (default: 100).')
+    parser.add_argument('--tc_threshold', type=float, default=0.0028, help='Transaction cost threshold for trading (default: 0.0028).')
+    parser.add_argument('--train_years', type=int, default=4, help='Number of years for the rolling training window (default: 4).')
+    parser.add_argument('--retrain_days', type=int, default=5, help='Interval in days to retrain the model (default: 5).')
+    parser.add_argument('--significance', type=float, default=0.05, help='Cointegration p-value significance level (default: 0.05).')
+    parser.add_argument('--save-results', type=str, metavar='PATH', help='Path to the ROOT directory to save trades and models for analysis.')
     
     args = parser.parse_args()
-    
-    strategy = MLEnhancedStrategy(
-        transaction_cost=args.transaction_cost,
-        max_pairs=args.max_pairs,
-        short_selling=args.short_selling
-    )
-    
-    strategy.load_data(args.data_path)
-    strategy.find_cointegrated_pairs(significance_level=args.significance)
-    strategy.train_models()
-    strategy.backtest_strategy()
-    strategy.print_results()
+
+    try:
+        strategy = MLSpreadPredictionStrategy(
+            training_window_years=args.train_years,
+            retrain_interval_days=args.retrain_days,
+            significance_level=args.significance,
+            min_pairs=args.min_pairs,
+            max_stocks=args.max_stocks,
+            tc_threshold=args.tc_threshold
+        )
+        strategy.load_data(args.data_path)
+        strategy.find_top_cointegrated_pairs()
+
+        # --- Dynamic Output Path Generation ---
+        output_path = None
+        if args.save_results:
+            dataset_name = Path(args.data_path).name
+            run_name = (
+                f"{dataset_name}_pairs-{args.min_pairs}_sig-{args.significance}_"
+                f"retrain-{args.retrain_days}_tc-{args.tc_threshold}"
+            )
+            output_path = Path(args.save_results) / run_name
+            print(f"\n💾 Saving results for this run to: {output_path}")
+            output_path.mkdir(parents=True, exist_ok=True)
+            
+        strategy.run_walk_forward_backtest(save_results_path=output_path)
+        
+    except Exception as e:
+        print(f"❌ An error occurred: {e}")
+        import traceback
+        traceback.print_exc()
 
 if __name__ == "__main__":
-    main() 
+    main()
