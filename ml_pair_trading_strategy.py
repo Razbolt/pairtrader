@@ -51,6 +51,7 @@ class MLSpreadPredictionStrategy:
         self.tc_threshold = tc_threshold
         self.cointegrated_pairs = []
         self.all_trades = {} # Dictionary to store trades per pair
+        self.all_spread_histories = {} # Dictionary to store prediction history
 
     def load_data(self, data_path):
         """
@@ -92,9 +93,10 @@ class MLSpreadPredictionStrategy:
         print(f"✅ Found {len(self.price_columns)} price series.")
         return self
 
-    def find_top_cointegrated_pairs(self):
+    def find_top_cointegrated_pairs(self, target_pair=None):
         """
         Finds the top N most strongly cointegrated pairs from the dataset.
+        If a target_pair is specified, it ensures that pair is included if found.
         """
         print(f"\n🔍 Finding top {self.min_pairs} cointegrated pairs (testing top {self.max_stocks} stocks, sig < {self.significance_level*100}%)")
         
@@ -127,12 +129,34 @@ class MLSpreadPredictionStrategy:
                     continue
         
         if all_found_pairs:
-            # Sort by p-value and select the top N
+            # Sort by p-value
             sorted_pairs = sorted(all_found_pairs, key=lambda x: x['p_value'])
-            self.cointegrated_pairs = sorted_pairs[:self.min_pairs]
-            print(f"🏆 Found {len(self.cointegrated_pairs)} pairs meeting criteria:")
-            for k, pair_info in enumerate(self.cointegrated_pairs):
-                print(f"   {k+1}. {pair_info['stock1_name']}-{pair_info['stock2_name']} (p-value: {pair_info['p_value']:.6f}, β: {pair_info['hedge_ratio']:.4f})")
+
+            if target_pair:
+                stock1_name, stock2_name = target_pair.split('-')
+                target_pair_info = None
+                # Find the specific pair in the full sorted list
+                for pair in sorted_pairs:
+                    if (pair['stock1_name'] == stock1_name and pair['stock2_name'] == stock2_name) or \
+                       (pair['stock1_name'] == stock2_name and pair['stock2_name'] == stock1_name):
+                        target_pair_info = pair
+                        break
+                
+                if target_pair_info:
+                    print(f"✅ Found specified pair: {target_pair} (p-value: {target_pair_info['p_value']:.4f})")
+                    # Make it the only pair to be backtested
+                    self.cointegrated_pairs = [target_pair_info]
+                else:
+                    print(f"❌ Specified pair {target_pair} not found among cointegrated pairs. Cannot proceed.")
+                    self.cointegrated_pairs = []
+            else:
+                # Otherwise, take the top N pairs
+                self.cointegrated_pairs = sorted_pairs[:self.min_pairs]
+
+            if not target_pair:
+                print(f"🏆 Found {len(self.cointegrated_pairs)} pairs meeting criteria:")
+                for k, pair_info in enumerate(self.cointegrated_pairs):
+                    print(f"   {k+1}. {pair_info['stock1_name']}-{pair_info['stock2_name']} (p-value: {pair_info['p_value']:.6f}, β: {pair_info['hedge_ratio']:.4f})")
         else:
             print("❌ No cointegrated pairs found.")
         return self
@@ -220,6 +244,7 @@ class MLSpreadPredictionStrategy:
                 continue
 
             pair_trades = []
+            spread_history = []
             position = 0
             model = None
             last_retrain_date = backtest_date_range.min() - pd.Timedelta(days=999)
@@ -240,6 +265,12 @@ class MLSpreadPredictionStrategy:
                     actual_spread_today = spread.loc[current_date]
                     delta_t1 = predicted_spread_tomorrow - actual_spread_today
 
+                    spread_history.append({
+                        'date': current_date,
+                        'real_spread': actual_spread_today,
+                        'predicted_spread': predicted_spread_tomorrow
+                    })
+
                     if position == 0:
                         if delta_t1 > self.tc_threshold:
                             position, entry_price_s1, entry_price_s2, entry_date = 1, s1.loc[current_date], s2.loc[current_date], current_date
@@ -248,21 +279,23 @@ class MLSpreadPredictionStrategy:
                     elif (position == 1 and delta_t1 < 0) or (position == -1 and delta_t1 > 0):
                         exit_price_s1, exit_price_s2 = s1.loc[current_date], s2.loc[current_date]
                         pnl = (exit_price_s1 - entry_price_s1) * position + pair_info['hedge_ratio'] * (entry_price_s2 - exit_price_s2) * position
-                        trade_value = entry_price_s1 + pair_info['hedge_ratio'] * entry_price_s2
-                        pair_trades.append({'entry_date': entry_date, 'exit_date': current_date, 'pnl': pnl, 'type': 'Long' if position == 1 else 'Short', 'trade_value': trade_value})
+                        pair_trades.append({'entry_date': entry_date, 'exit_date': current_date, 'pnl': pnl})
                         position = 0
             
-            trades_df = pd.DataFrame(pair_trades)
-            trades_df['cum_pnl'] = trades_df['pnl'].cumsum()
-            daily_pnl_df = trades_df.set_index('exit_date')['pnl'].resample('D').sum().fillna(0).reset_index()
-            daily_pnl_df.rename(columns={'exit_date': 'date'}, inplace=True)
-
-            # Store results for this pair
-            self.all_trades[pair_name] = trades_df
-            all_daily_pnl_dfs.append(daily_pnl_df)
+            # --- FIX: Store results as DataFrames from the start ---
+            self.all_trades[pair_name] = pd.DataFrame(pair_trades)
+            self.all_spread_histories[pair_name] = pd.DataFrame(spread_history).set_index('date')
+            
+            # Create a daily PnL series for this pair for overall analysis
+            if not self.all_trades[pair_name].empty:
+                pair_trades_df = self.all_trades[pair_name]
+                pair_daily_pnl_df = pair_trades_df.set_index('exit_date')['pnl'].resample('D').sum().fillna(0).reset_index()
+                pair_daily_pnl_df.rename(columns={'exit_date': 'date'}, inplace=True)
+                all_daily_pnl_dfs.append(pair_daily_pnl_df)
         
         # Now print the full summary
         self.print_full_results(all_daily_pnl_dfs, save_results_path)
+        return all_daily_pnl_dfs
 
     def print_full_results(self, all_daily_pnl_dfs, root_output_dir):
         """
@@ -327,6 +360,22 @@ class MLSpreadPredictionStrategy:
         print(f"Max Drawdown:                $ {abs(max_drawdown):10.2f}")
         print(f"Profit Factor:                 {profit_factor:10.2f}")
         print("----------------------------------------------------")
+
+        full_trades_df = pd.concat(self.all_trades.values())
+        total_trades = len(full_trades_df)
+        
+        if total_trades > 0:
+            wins = full_trades_df[full_trades_df['pnl'] > 0]
+            losses = full_trades_df[full_trades_df['pnl'] < 0]
+            win_rate = (len(wins) / total_trades) * 100 if total_trades > 0 else 0
+            
+            gross_profit = wins['pnl'].sum()
+            gross_loss = abs(losses['pnl'].sum())
+            profit_factor = gross_profit / gross_loss if gross_loss > 0 else np.inf
+            avg_pnl_per_trade = full_trades_df['pnl'].mean()
+        else:
+            win_rate, profit_factor, avg_pnl_per_trade = 0, 0, 0
+
         print(f"Total Trades:                  {total_trades:10d}")
         print(f"Win Rate:                      {win_rate:10.2f}%")
         print(f"Avg P&L per Trade:           $ {avg_pnl_per_trade:10.2f}")
@@ -335,10 +384,9 @@ class MLSpreadPredictionStrategy:
         print("\n--- PERFORMANCE BY PAIR ---")
         
         # Determine the full date range for the trading period for accurate daily stats
-        all_trades_df = pd.concat(self.all_trades.values())
-        if not all_trades_df.empty:
-            trading_start_date = all_trades_df['entry_date'].min()
-            trading_end_date = all_trades_df['exit_date'].max()
+        if not full_trades_df.empty:
+            trading_start_date = full_trades_df['entry_date'].min()
+            trading_end_date = full_trades_df['exit_date'].max()
             date_range = pd.date_range(start=trading_start_date, end=trading_end_date, freq='D')
 
         for pair_name, trades_df in self.all_trades.items():
@@ -349,7 +397,7 @@ class MLSpreadPredictionStrategy:
             pair_sortino = 0
 
             # Calculate per-pair Sharpe and Sortino based on a full daily P&L series
-            if not trades_df.empty and not all_trades_df.empty:
+            if not trades_df.empty and not full_trades_df.empty:
                 # Create daily P&L series for the pair, reindexed to the full trading period
                 pair_daily_pnl = trades_df.set_index('exit_date')['pnl'].resample('D').sum().reindex(date_range, fill_value=0)
                 pair_cum_pnl = pair_daily_pnl.cumsum()
@@ -370,20 +418,27 @@ class MLSpreadPredictionStrategy:
             print(f"\nPair: {pair_name}")
             print(f"  Trades: {len(trades_df)}, P&L: ${pair_pnl_total:.2f}, Win Rate: {pair_win_rate:.2f}%, Sharpe: {pair_sharpe:.2f}, Sortino: {pair_sortino:.2f}")
 
-    def save_pair_results(self, pair_name, trades_df, model, root_output_dir):
-        """Saves backtesting results for a single pair to a dedicated folder."""
-        output_dir = Path(root_output_dir) / pair_name
-        output_dir.mkdir(parents=True, exist_ok=True)
+    def save_pair_results(self, pair_name, trades_df, model, spread_df, root_output_dir):
+        """Saves the results for a single pair to a dedicated folder."""
+        pair_output_dir = Path(root_output_dir) / pair_name
+        pair_output_dir.mkdir(parents=True, exist_ok=True)
         
-        trades_df.to_csv(output_dir / "backtest_trades.csv", index=False)
-        joblib.dump(model, output_dir / "xgboost_model.joblib")
+        # Save trades
+        trades_df.to_csv(pair_output_dir / 'backtest_trades.csv', index=False)
         
-        print(f"   💾 Results for {pair_name} saved to: {output_dir}")
+        # Save spread history
+        if not spread_df.empty:
+            spread_df.to_csv(pair_output_dir / 'spread_predictions.csv')
+        
+        # Save model
+        if model:
+            joblib.dump(model, pair_output_dir / 'xgboost_model.joblib')
 
 def main():
+    """Main function to run the ML backtest."""
     parser = argparse.ArgumentParser(
-        description="ML Pair Trading with a Specialized Model per Pair.",
-        formatter_class=argparse.RawTextHelpFormatter
+        description="ML Pair Trading Strategy with Walk-Forward Validation",
+        formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument('data_path', type=str, help='Path to the directory containing pair trading data.')
     parser.add_argument('--min-pairs', type=int, default=5, help='Number of top cointegrated pairs to backtest (default: 5).')
@@ -392,9 +447,17 @@ def main():
     parser.add_argument('--train_years', type=int, default=4, help='Number of years for the rolling training window (default: 4).')
     parser.add_argument('--retrain_days', type=int, default=5, help='Interval in days to retrain the model (default: 5).')
     parser.add_argument('--significance', type=float, default=0.05, help='Cointegration p-value significance level (default: 0.05).')
-    parser.add_argument('--save-results', type=str, metavar='PATH', help='Path to the ROOT directory to save trades and models for analysis.')
+    parser.add_argument('--pair', type=str, default=None, help='Specify a single pair to run (e.g., AAPL-GOOG)')
     
     args = parser.parse_args()
+
+    # --- Create a unique directory name for the results ---
+    data_name = Path(args.data_path).name.replace('_prices_48m12m', '')
+    results_dir_name = (
+        f"{data_name}_pairs-{args.min_pairs}_sig-{args.significance}_"
+        f"retrain-{args.retrain_days}_tc-{args.tc_threshold}"
+    )
+    save_path = Path('backtest_results') / results_dir_name
 
     try:
         strategy = MLSpreadPredictionStrategy(
@@ -405,27 +468,39 @@ def main():
             max_stocks=args.max_stocks,
             tc_threshold=args.tc_threshold
         )
+
         strategy.load_data(args.data_path)
-        strategy.find_top_cointegrated_pairs()
-
-        # --- Dynamic Output Path Generation ---
-        output_path = None
-        if args.save_results:
-            dataset_name = Path(args.data_path).name
-            run_name = (
-                f"{dataset_name}_pairs-{args.min_pairs}_sig-{args.significance}_"
-                f"retrain-{args.retrain_days}_tc-{args.tc_threshold}"
-            )
-            output_path = Path(args.save_results) / run_name
-            print(f"\n💾 Saving results for this run to: {output_path}")
-            output_path.mkdir(parents=True, exist_ok=True)
-            
-        strategy.run_walk_forward_backtest(save_results_path=output_path)
+        strategy.find_top_cointegrated_pairs(target_pair=args.pair)
         
-    except Exception as e:
-        print(f"❌ An error occurred: {e}")
-        import traceback
-        traceback.print_exc()
+        if not strategy.cointegrated_pairs:
+            print("No pairs to backtest. Exiting.")
+            return
 
-if __name__ == "__main__":
+        all_daily_pnl_dfs = strategy.run_walk_forward_backtest(save_results_path=save_path)
+        
+        # Print and save full results
+        if all_daily_pnl_dfs:
+            strategy.print_full_results(all_daily_pnl_dfs, save_path)
+            # --- Save Individual Pair Results ---
+            for pair_name, trades_list in strategy.all_trades.items():
+                trades_df = pd.DataFrame(trades_list)
+                
+                # Get the feature importance from the last trained model for this pair
+                model_to_save = strategy.all_spread_histories[pair_name].get('model', None)
+                
+                # Save results
+                if save_path:
+                    spread_history_df = strategy.all_spread_histories.get(pair_name, pd.DataFrame())
+                    strategy.save_pair_results(pair_name, trades_df, model_to_save, spread_history_df, save_path)
+
+    except FileNotFoundError as e:
+        print(f"❌ Error: {e}")
+        sys.exit(1)
+    except Exception as e:
+        import traceback
+        print(f"❌ An unexpected error occurred: {e}")
+        traceback.print_exc()
+        sys.exit(1)
+
+if __name__ == '__main__':
     main()

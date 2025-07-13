@@ -25,6 +25,11 @@ analysis/*.jpg
 analysis/*.jpeg
 !analysis/README.md
 
+# Output directories
+analysis/
+paper_plots_5_pairs/
+backtest_results/
+
 # OS files
 .DS_Store
 

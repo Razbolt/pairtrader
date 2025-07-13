@@ -546,6 +546,37 @@ class LogPricesCointegrationStrategy:
         for i, pair in enumerate(best_pairs):
             print(f"   {i+1}. {pair['stock1_name']}-{pair['stock2_name']}: p={pair['coint_p_value']:.4f}, β={pair['hedge_ratio']:.3f}")
 
+    def save_results(self, output_dir):
+        """💾 Save backtest results to files, consistent with ML script's structure."""
+        if not self.trades:
+            print("   No trades to save.")
+            return
+
+        output_path = Path(output_dir)
+        
+        # Save trades per pair to be consistent with ML script
+        trades_df = pd.DataFrame(self.trades)
+        
+        if not trades_df.empty:
+            for pair_name, pair_trades_df in trades_df.groupby('pair'):
+                pair_output_dir = output_path / pair_name
+                pair_output_dir.mkdir(parents=True, exist_ok=True)
+                # Standardize column name before saving
+                save_df = pair_trades_df.rename(columns={'net_pnl': 'pnl'})
+                save_df.to_csv(pair_output_dir / 'backtest_trades.csv', index=False)
+
+        # Save aggregate performance metrics
+        if self.performance_metrics:
+            perf_df = pd.DataFrame([self.performance_metrics])
+            perf_df.to_csv(output_path / 'performance_metrics.csv', index=False)
+        
+        # Save pair summary
+        if hasattr(self, 'pair_results') and self.pair_results:
+            pair_results_df = pd.DataFrame(self.pair_results)
+            pair_results_df.to_csv(output_path / 'pair_summary.csv', index=False)
+            
+        print(f"\n   💾 Results for Cointegration strategy saved to: {output_path}")
+
 
 def main():
     """Main function"""
@@ -577,6 +608,12 @@ def main():
         strategy.find_cointegrated_pairs(max_pairs=args.max_pairs, min_stocks=args.min_stocks)
         strategy.backtest_strategy()
         strategy.print_results()
+        
+        # Create a directory for the results
+        data_name = Path(args.data_path).stem.replace('_prices_48m12m', '')
+        results_dir_name = f"coint_{data_name}_pairs-{args.max_pairs}_sig-{args.significance}_entry-{args.entry_threshold}"
+        output_dir = Path('backtest_results') / results_dir_name
+        strategy.save_results(output_dir)
         
         print("\n🎯 Strategy analysis completed!")
         
